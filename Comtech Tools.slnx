@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Comtech Tools/Comtech Tools.vcxproj" Id="230a0143-8e54-4044-a5ab-4a5779fa7337" />
+</Solution>
