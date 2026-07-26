@@ -3,7 +3,10 @@ name: Build and Release CSCsecure
 on:
   push:
     tags:
-      - 'v*' # Triggers the workflow when you push a tag like "v3.1.0"
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build-and-release:
@@ -17,13 +20,12 @@ jobs:
       uses: microsoft/setup-msbuild@v3
         
     - name: Build the Project
-      # Compiles your C++ Win32 project specifically for x64 Release
-      run: msbuild CSCsecure.sln /p:Configuration=Release /p:Platform=x64
+      # Uses .slnx matching your GitHub repository
+      run: msbuild CSCsecure.slnx /p:Configuration=Release /p:Platform=x64
       
     - name: Create Release and Upload EXE
       uses: softprops/action-gh-release@v2
       with:
-        # Grabs the newly built CSCsecure executable
-        files: x64/Release/CSCsecure.exe 
+        files: x64/Release/CSCsecure.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
