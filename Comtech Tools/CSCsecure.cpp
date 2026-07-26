@@ -1668,8 +1668,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hbrBackground = NULL;
     wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
     RegisterClass(&wc);
-
-    HWND hwnd = CreateWindowExA(0, CLASS_NAME, "CSCsecure",
+    std::string ver = GetFileVersionValue("ProductVersion");
+    std::string windowTitle = "CSCsecure v" + ver;
+    HWND hwnd = CreateWindowExA(0, CLASS_NAME, windowTitle.c_str(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 635, 715, NULL, NULL, hInstance, NULL);
 

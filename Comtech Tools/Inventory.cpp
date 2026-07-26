@@ -20,6 +20,7 @@
 static std::string g_inputDept;
 static std::string g_inputOwner;
 static bool g_inputDone = false;
+static bool g_inputCancelled = false;
 static HWND hEditDept;
 static HWND hEditOwner;
 
@@ -31,14 +32,23 @@ static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             char buf2[256] = { 0 };
             GetWindowTextA(hEditDept, buf1, sizeof(buf1));
             GetWindowTextA(hEditOwner, buf2, sizeof(buf2));
+
+            // Check for empty inputs
+            if (strlen(buf1) == 0 || strlen(buf2) == 0) {
+                MessageBoxA(hwnd, "Please enter both Department and Asset Owner.", "Input Required", MB_OK | MB_ICONWARNING);
+                return 0; // Halt and wait for user
+            }
+
             g_inputDept = buf1;
             g_inputOwner = buf2;
             g_inputDone = true;
+            g_inputCancelled = false;
             DestroyWindow(hwnd);
         }
         break;
-    case WM_CLOSE:
+    case WM_CLOSE: // User clicked the X button
         g_inputDone = true;
+        g_inputCancelled = true;
         DestroyWindow(hwnd);
         break;
     default:
@@ -46,62 +56,68 @@ static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     }
     return 0;
 }
-
-// Helper to ask user for both inputs dynamically at once
-static void AskUserDepartmentAndOwner(HWND hParent, std::string& outDept, std::string& outOwner) {
+static bool AskUserDepartmentAndOwner(HWND hParent, std::string& outDept, std::string& outOwner) {
     g_inputDept = "";
     g_inputOwner = "";
     g_inputDone = false;
+    g_inputCancelled = false; // Reset flag
 
-    WNDCLASSA wc = { 0 };
+    // 1. Register the Window Class
+    WNDCLASS wc = { 0 };
     wc.lpfnWndProc = InputBoxProc;
     wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "CSCInputBoxDual";
+    wc.lpszClassName = "CustomInputDialog";
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    RegisterClassA(&wc);
+    RegisterClass(&wc);
 
-    HWND hWnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, "CSCInputBoxDual", "Asset Information",
-        WS_VISIBLE | WS_SYSMENU | WS_CAPTION | WS_POPUP,
-        0, 0, 320, 210, hParent, NULL, wc.hInstance, NULL);
+    // 2. Create the Window
+    HWND hInputWnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        "CustomInputDialog", "Enter Inventory Details",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        0, 0, 320, 200, hParent, NULL, GetModuleHandle(NULL), NULL);
 
-    // Center the input box relative to the parent
+    // Center the window relative to parent
     if (hParent) {
-        RECT rcParent;
-        GetWindowRect(hParent, &rcParent);
-        SetWindowPos(hWnd, NULL,
+        RECT rcParent; GetWindowRect(hParent, &rcParent);
+        SetWindowPos(hInputWnd, NULL,
             rcParent.left + (rcParent.right - rcParent.left) / 2 - 160,
-            rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 105,
-            320, 210, SWP_NOZORDER);
+            rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 100,
+            0, 0, SWP_NOSIZE | SWP_NOZORDER);
     }
 
-    CreateWindowExA(0, "STATIC", "Department:", WS_CHILD | WS_VISIBLE, 15, 15, 280, 20, hWnd, NULL, wc.hInstance, NULL);
-    hEditDept = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 15, 35, 275, 25, hWnd, (HMENU)2, wc.hInstance, NULL);
+    // 3. Create Controls (Labels, Textboxes, Button)
+    CreateWindowA("STATIC", "Department:", WS_VISIBLE | WS_CHILD, 20, 20, 100, 20, hInputWnd, NULL, NULL, NULL);
+    hEditDept = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, 120, 20, 150, 20, hInputWnd, NULL, NULL, NULL);
 
-    CreateWindowExA(0, "STATIC", "Asset Owner:", WS_CHILD | WS_VISIBLE, 15, 70, 280, 20, hWnd, NULL, wc.hInstance, NULL);
-    hEditOwner = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 15, 90, 275, 25, hWnd, (HMENU)3, wc.hInstance, NULL);
+    CreateWindowA("STATIC", "Asset Owner:", WS_VISIBLE | WS_CHILD, 20, 60, 100, 20, hInputWnd, NULL, NULL, NULL);
+    hEditOwner = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, 120, 60, 150, 20, hInputWnd, NULL, NULL, NULL);
 
-    CreateWindowExA(0, "BUTTON", "OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 115, 130, 80, 30, hWnd, (HMENU)1, wc.hInstance, NULL);
+    CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 110, 110, 80, 30, hInputWnd, (HMENU)1, NULL, NULL);
 
-    // Auto-focus on the first input so user can type immediately
-    SetFocus(hEditDept);
-
+    // Disable parent to make it modal
     if (hParent) EnableWindow(hParent, FALSE);
 
+    // 4. Message Loop (Halts execution here until user clicks OK or Close)
     MSG msg;
     while (!g_inputDone && GetMessage(&msg, NULL, 0, 0)) {
-        if (!IsDialogMessage(hWnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
     }
 
+    // Restore parent window
     if (hParent) {
         EnableWindow(hParent, TRUE);
         SetForegroundWindow(hParent);
     }
 
-    outDept = g_inputDept.empty() ? "N/A" : g_inputDept;
-    outOwner = g_inputOwner.empty() ? "N/A" : g_inputOwner;
+    // If user clicked X, abort
+    if (g_inputCancelled) {
+        return false;
+    }
+
+    outDept = g_inputDept;
+    outOwner = g_inputOwner;
+    return true;
 }
 
 // Helper to read Registry Strings
@@ -164,25 +180,6 @@ std::string GetSerialNumber() {
 
     result.erase(result.find_last_not_of(" \n\r\t") + 1); // Trim whitespace
     return result.empty() ? "N/A" : result;
-}
-
-// Helper to calculate End of Support Life locally without network delays
-std::string GetWindowsEOSL(const std::string& osName, const std::string& version) {
-    bool isEnterprise = (osName.find("Enterprise") != std::string::npos || osName.find("Education") != std::string::npos);
-
-    if (version == "24H2") return isEnterprise ? "Oct 12, 2027" : "Oct 13, 2026";
-    if (version == "23H2") return isEnterprise ? "Nov 10, 2026" : "Nov 11, 2025";
-    if (version == "22H2") return "Oct 14, 2025";
-
-    // Explicit dates instead of Unsupported text
-    if (version == "21H2") return isEnterprise ? "Jun 11, 2024" : "Jun 13, 2023";
-    if (version == "21H1") return "Dec 13, 2022";
-    if (version == "20H2") return isEnterprise ? "May 9, 2023" : "May 10, 2022";
-    if (version == "2004") return "Dec 14, 2021";
-    if (version == "1909") return isEnterprise ? "May 10, 2022" : "May 11, 2021";
-
-    // General fallback for unknown older versions
-    return "Oct 14, 2025";
 }
 
 struct SoftwareItem {
@@ -475,7 +472,6 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
             << EscapeCsv(assetOwner) << ","
             << EscapeCsv(assetUpdatedDate) << ","
             << EscapeCsv(softwareVersionStr) << ","
-            << EscapeCsv(GetWindowsEOSL(osName, displayVer)) << ","
             << EscapeCsv(scanDate) << "\n";
         };
 
@@ -510,8 +506,10 @@ static DWORD WINAPI InventoryThreadProc(LPVOID lpParam) {
     std::string departmentInput;
     std::string ownerInput;
 
-    // Call the single unified dialog
-    AskUserDepartmentAndOwner(hParent, departmentInput, ownerInput);
+    if (!AskUserDepartmentAndOwner(hParent, departmentInput, ownerInput)) {
+        return 0;
+    }
+
 
     char exePath[MAX_PATH] = { 0 };
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
