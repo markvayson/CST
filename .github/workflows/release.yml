@@ -1,0 +1,30 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # This triggers the workflow when you push a tag like "v1.0.0"
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x' # Update to match your project's framework
+        
+    - name: Build the Project
+      run: dotnet publish -c Release
+      
+    - name: Create Release and Upload EXE
+      uses: softprops/action-gh-release@v2
+      with:
+        # Update this path to where your .exe is generated
+        files: bin/Release/net8.0/publish/*.exe 
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
