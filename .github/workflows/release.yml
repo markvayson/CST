@@ -1,9 +1,9 @@
-name: Build and Release
+name: Build and Release CSCsecure
 
 on:
   push:
     tags:
-      - 'v*' # This triggers the workflow when you push a tag like "v1.0.0"
+      - 'v*' # Triggers the workflow when you push a tag like "v3.1.0"
 
 jobs:
   build-and-release:
@@ -13,18 +13,17 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
       
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x' # Update to match your project's framework
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v3
         
     - name: Build the Project
-      run: dotnet publish -c Release
+      # Compiles your C++ Win32 project specifically for x64 Release
+      run: msbuild CSCsecure.sln /p:Configuration=Release /p:Platform=x64
       
     - name: Create Release and Upload EXE
       uses: softprops/action-gh-release@v2
       with:
-        # Update this path to where your .exe is generated
-        files: bin/Release/net8.0/publish/*.exe 
+        # Grabs the newly built CSCsecure executable
+        files: x64/Release/CSCsecure.exe 
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
