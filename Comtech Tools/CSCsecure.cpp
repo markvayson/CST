@@ -18,6 +18,7 @@
 #include <sstream>
 #include <d2d1.h>
 #include <dwmapi.h> 
+#include "Inventory.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -1552,7 +1553,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (id == IDM_SEARCHPASS) { MessageBoxA(hwnd, "Search Pass module loaded.", "Action", MB_OK); return 0; }
         if (id == IDM_WINUPDATE) { RunSilentCmd("start ms-settings:windowsupdate"); return 0; }
-        if (id == IDM_INVENTORY) { MessageBoxA(hwnd, "Executing inventory collection...", "Action", MB_OK); return 0; }
+        if (id == IDM_INVENTORY) {
+            RunInventoryCollection(hwnd);
+            return 0;
+        }
 
         if (id == ID_STATUS_BAR) {
             ShowLogWindow(hwnd);

@@ -158,11 +158,13 @@
   <ItemGroup>
     <ClInclude Include="CSCsecure.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="Inventory.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CSCsecure.cpp" />
+    <ClCompile Include="Inventory.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="CSCsecure.rc" />
