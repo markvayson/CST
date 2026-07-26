@@ -167,12 +167,12 @@
     <ResourceCompile Include="Comtech Tools.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="Comtech Tools.ico" />
     <Image Include="D:\IT\Comtech Logo.ico" />
-    <Image Include="small.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="CustomHardening.ictpl" />
     <None Include="D:\IT\IISCryptoCli.exe" />
+    <None Include="IISCryptoCli.exe" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

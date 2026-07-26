@@ -39,17 +39,17 @@
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="small.ico">
-      <Filter>Resource Files</Filter>
-    </Image>
-    <Image Include="Comtech Tools.ico">
-      <Filter>Resource Files</Filter>
-    </Image>
     <Image Include="D:\IT\Comtech Logo.ico">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>
   <ItemGroup>
     <None Include="D:\IT\IISCryptoCli.exe" />
+    <None Include="CustomHardening.ictpl">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="IISCryptoCli.exe">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

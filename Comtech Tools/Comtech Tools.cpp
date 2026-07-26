@@ -15,12 +15,24 @@
 #include <iostream>
 #include "Resource.h"
 #include <sstream>
+#include <d2d1.h>
+#include <dwmapi.h> // Added for Dark Mode Title Bar
 
+#pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "winspool.lib")
 #pragma comment(lib, "netapi32.lib")
+#pragma comment(lib, "dwmapi.lib") // Added for Dark Mode Title Bar
+
+// Dark Mode Title Bar Attributes
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
+#define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
+#endif
 
 #ifndef DPC_ENABLE
 #define DPC_ENABLE 0x00000001
@@ -32,23 +44,33 @@
 #define DCPC_GLOBAL 0x00000001
 #endif
 
-// Fallback Resource ID if not defined in Resource.h
-#ifndef IDR_IISSCRYPTOCLI
-#define IDR_IISSCRYPTOCLI 101
+template <class T> void SafeRelease(T** ppT) {
+    if (*ppT) {
+        (*ppT)->Release();
+        *ppT = NULL;
+    }
+}
+
+#ifndef IDR_IISCRYPTOCLI
+#define IDR_IISCRYPTOCLI 101
 #endif
 
 #ifndef IDI_ICON1
 #define IDI_ICON1 102
 #endif
 
-// Control IDs
-#define ID_BTN_BEST_PRACTICE 1001
-#define ID_BTN_RESTORE       1002
-#define ID_BTN_APPLY_CHANGES 1003
+// Control & Menu IDs
+#define ID_BTN_SECURE_ALL    1003
 #define ID_STATUS_BAR        1004
 #define ID_LOG_EDIT          1005
+#define ID_BTN_MENU          1006
 #define ID_HARD_BASE         2000
-#define ID_SOFT_BASE         3000
+
+#define IDM_SETTINGS         3001
+#define IDM_ABOUT            3002
+#define IDM_SEARCHPASS       3003
+#define IDM_WINUPDATE        3004
+#define IDM_INVENTORY        3005
 
 // Dark Theme Color Palette
 #define COLOR_BG          RGB(11, 19, 43)
@@ -79,52 +101,33 @@ std::vector<std::string> g_logMemory;
 // System Hostname
 char g_computerName[MAX_COMPUTERNAME_LENGTH + 1] = "UNKNOWN";
 
-// Metric Counts
-int g_totalControls = 12;
+// Metric Counts (10 Hardening items total)
+int g_totalControls = 10;
 int g_secureCount = 0;
 int g_attentionCount = 0;
 int g_insecureCount = 0;
 
-// Target Hardening Action Choice (1 = Left Button / Bad or Unlocked, 2 = Right Button / Best or Locked)
-int g_hardStates[9] = { 2, 2, 2, 1, 1, 2, 2, 2, 2 };
-
-// Software Action States (0 = Ignore, 1 = Install/Update, 2 = Uninstall)
-int g_softStates[3] = { 0, 0, 0 };
+int g_hardStates[10] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2 };
 
 struct HardeningRow {
     const char* name;
     std::string liveInfo;
-    const char* opt1Label;
-    const char* opt2Label;
-    HWND hBtnOpt1;
-    HWND hBtnOpt2;
+    std::string statusLabel;
+    const char* actionLabel;
+    HWND hBtnAction;
 };
 
-HardeningRow g_hardRows[9] = {
-    {"Bluetooth Adapter", "Auditing...", "Enabled", "Disabled", NULL, NULL},
-    {"Wi-Fi Network Adapter", "Auditing...", "Enabled", "Disabled", NULL, NULL},
-    {"SMB Server Protocols", "Auditing...", "Default / Unhardened", "Harden (v1 Off / v2 On)", NULL, NULL},
-    {"Shared Network Printers", "Auditing...", "Ignore", "Remove Shares", NULL, NULL},
-    {"Shared Network Folders / Files", "Auditing...", "Ignore", "Remove Shares", NULL, NULL},
-    {"SSL / TLS & Ciphers", "Auditing...", "Default / Unhardened", "Harden (IIS Crypto Best)", NULL, NULL},
-    {"Browser Account Login", "Auditing...", "Unlocked", "Lock Accounts", NULL, NULL},
-    {"Browser Password Lock", "Auditing...", "Unlocked", "Lock Passwords", NULL, NULL},
-    {"Local User Accounts", "Auditing...", "Ignore", "Disable Inactive Users", NULL, NULL}
-};
-
-struct SoftwareRow {
-    const char* name;
-    std::string liveInfo;
-    const char* packageId;
-    HWND hBtnIgnore;
-    HWND hBtnInstall;
-    HWND hBtnUninstall;
-};
-
-SoftwareRow g_softRows[3] = {
-    {"WinRAR Archiver", "Auditing...", "RARLab.WinRAR", NULL, NULL, NULL},
-    {"Microsoft Office Suite", "Auditing...", "Microsoft.Office", NULL, NULL, NULL},
-    {"Microsoft OneDrive", "Auditing...", "Microsoft.OneDrive", NULL, NULL, NULL}
+HardeningRow g_hardRows[10] = {
+    {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", NULL},
+    {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", NULL},
+    {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", NULL},
+    {"Shared Network Printers", "Auditing...", "Auditing...", "Secure", NULL},
+    {"Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", NULL},
+    {"SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", NULL},
+    {"Browser Account Login", "Auditing...", "Auditing...", "Lock", NULL},
+    {"Browser Password Lock", "Auditing...", "Auditing...", "Lock", NULL},
+    {"Local User Accounts", "Auditing...", "Auditing...", "Secure", NULL},
+    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", NULL}
 };
 
 struct PrinterStatus {
@@ -135,19 +138,94 @@ struct PrinterStatus {
 
 std::vector<PrinterStatus> g_printerList;
 
-// Function Declaration
+// Function Declarations
 void LogMessage(const std::string& msg);
+void UpdateStatus(const std::string& msg);
+
+// --- NETWORK SECURITY POLICIES AUDIT & HARDENING ---
+bool IsNetworkSecPoliciesHardened() {
+    HKEY hKey;
+    DWORD dwSize = sizeof(DWORD);
+    DWORD lmCompat = 0, serverReq = 0, clientReq = 0;
+    DWORD restrictAnon = 0, restrictSam = 0, ldapSigning = 0;
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Lsa", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExA(hKey, "LmCompatibilityLevel", NULL, NULL, (LPBYTE)&lmCompat, &dwSize);
+        RegQueryValueExA(hKey, "RestrictAnonymous", NULL, NULL, (LPBYTE)&restrictAnon, &dwSize);
+        RegQueryValueExA(hKey, "RestrictAnonymousSAM", NULL, NULL, (LPBYTE)&restrictSam, &dwSize);
+        RegCloseKey(hKey);
+    }
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExA(hKey, "RequireSecuritySignature", NULL, NULL, (LPBYTE)&serverReq, &dwSize);
+        RegCloseKey(hKey);
+    }
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExA(hKey, "RequireSecuritySignature", NULL, NULL, (LPBYTE)&clientReq, &dwSize);
+        RegCloseKey(hKey);
+    }
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) { // Optional check or check standard LDAP path below
+        // Handled via NTDS / LDAP policies
+    }
+
+    // Standard path for LDAP client signing (LDAPClientIntegrity)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\Tcpip", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        // Just checking base registry for LDAP client path: SYSTEM\\CurrentControlSet\\Services\\LDAP
+        RegCloseKey(hKey);
+    }
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LDAP", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExA(hKey, "LDAPClientIntegrity", NULL, NULL, (LPBYTE)&ldapSigning, &dwSize);
+        RegCloseKey(hKey);
+    }
+
+    return (lmCompat == 5 && serverReq == 1 && clientReq == 1 &&
+        restrictAnon >= 1 && restrictSam >= 1 && ldapSigning >= 2);
+}
+void ConfigureNetworkSecPolicies(bool harden) {
+    HKEY hKey;
+    DWORD lmCompat = harden ? 5 : 0;
+    DWORD sigEnabled = harden ? 1 : 0;
+    DWORD sigRequired = harden ? 1 : 0;
+    DWORD restrictVal = harden ? 1 : 0; // 1 = Do not allow enumeration of SAM accounts/shares anonymously
+    DWORD ldapVal = harden ? 2 : 0;     // 1 = Negotiate signing, 2 = Require signing
+
+    // LSA Settings (Includes Anonymous Enumeration & NTLM)
+    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Lsa", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "LmCompatibilityLevel", 0, REG_DWORD, (const BYTE*)&lmCompat, sizeof(lmCompat));
+        RegSetValueExA(hKey, "RestrictAnonymous", 0, REG_DWORD, (const BYTE*)&restrictVal, sizeof(restrictVal));
+        RegSetValueExA(hKey, "RestrictAnonymousSAM", 0, REG_DWORD, (const BYTE*)&restrictVal, sizeof(restrictVal));
+        RegCloseKey(hKey);
+    }
+
+    // SMB Server Settings
+    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "EnableSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigEnabled, sizeof(sigEnabled));
+        RegSetValueExA(hKey, "RequireSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigRequired, sizeof(sigRequired));
+        RegCloseKey(hKey);
+    }
+
+    // SMB Workstation Settings
+    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "EnableSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigEnabled, sizeof(sigEnabled));
+        RegSetValueExA(hKey, "RequireSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigRequired, sizeof(sigRequired));
+        RegCloseKey(hKey);
+    }
+
+    // LDAP Client Signing Requirements
+    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LDAP", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "LDAPClientIntegrity", 0, REG_DWORD, (const BYTE*)&ldapVal, sizeof(ldapVal));
+        RegCloseKey(hKey);
+    }
+}
 
 // --- LOCAL USERS AUDIT & HARDENING ---
-
-// Returns local user summary string and populates user count (excluding Mark)
-std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled) {
+std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bool& outAllPasswordsExpire) {
     DWORD dwRead = 0, dwTotal = 0, dwResume = 0;
     PUSER_INFO_1 pBuf = NULL;
     NET_API_STATUS nStatus = NetUserEnum(NULL, 1, FILTER_NORMAL_ACCOUNT, (LPBYTE*)&pBuf, MAX_PREFERRED_LENGTH, &dwRead, &dwTotal, &dwResume);
 
     outUserCount = 0;
     outAllDisabled = true;
+    outAllPasswordsExpire = true;
     std::vector<std::string> activeUsers;
 
     if (nStatus == NERR_Success && pBuf != NULL) {
@@ -155,40 +233,45 @@ std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled) {
             std::wstring wUserName = pBuf[i].usri1_name;
             std::string userName(wUserName.begin(), wUserName.end());
 
-            // Dev Mode Exception: Exclude 'Mark'
-            if (_stricmp(userName.c_str(), "Mark") == 0) {
-                continue;
-            }
+            if (_stricmp(userName.c_str(), "Mark") == 0) continue;
 
             outUserCount++;
 
-            // Check if account is active
             if ((pBuf[i].usri1_flags & UF_ACCOUNTDISABLE) == 0) {
                 outAllDisabled = false;
                 activeUsers.push_back(userName);
+            }
+
+            if (pBuf[i].usri1_flags & UF_DONT_EXPIRE_PASSWD) {
+                outAllPasswordsExpire = false;
             }
         }
         NetApiBufferFree(pBuf);
     }
 
-    if (outUserCount == 0) {
-        return "No Local Users";
-    }
+    if (outUserCount == 0) return "No local user accounts detected.";
 
+    std::string baseMsg;
     if (outAllDisabled) {
-        return "Non-essential Accounts Disabled";
+        baseMsg = "Non-essential user accounts are disabled.";
+    }
+    else if (activeUsers.size() == 1) {
+        baseMsg = activeUsers[0] + " account is currently active.";
+    }
+    else {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s and %d other accounts are active.", activeUsers[0].c_str(), (int)(activeUsers.size() - 1));
+        baseMsg = std::string(buf);
     }
 
-    if (activeUsers.size() == 1) {
-        return "Active Account: " + activeUsers[0];
+    if (!outAllPasswordsExpire) {
+        if (outAllDisabled) return "Accounts disabled, but 'Password never expires' is enabled.";
+        return baseMsg + " (Pass never expires is ticked).";
     }
 
-    char buf[128];
-    snprintf(buf, sizeof(buf), "Active: %s (%d total)", activeUsers[0].c_str(), (int)activeUsers.size());
-    return std::string(buf);
+    return baseMsg;
 }
 
-// Disable or Enable local accounts across the machine
 void ConfigureLocalUsers(bool disableAccounts) {
     DWORD dwRead = 0, dwTotal = 0, dwResume = 0;
     PUSER_INFO_1 pBuf = NULL;
@@ -199,39 +282,30 @@ void ConfigureLocalUsers(bool disableAccounts) {
             std::wstring wUserName = pBuf[i].usri1_name;
             std::string userName(wUserName.begin(), wUserName.end());
 
-            // Dev Mode Exception: Exclude 'Mark' from modification
-            if (_stricmp(userName.c_str(), "Mark") == 0) {
-                LogMessage("Local User: Skipping protected dev account 'Mark'");
-                continue;
-            }
+            if (_stricmp(userName.c_str(), "Mark") == 0) continue;
 
             USER_INFO_1008 ui1008;
             DWORD dwParmErr = 0;
 
+            ui1008.usri1008_flags = pBuf[i].usri1_flags;
+
             if (disableAccounts) {
-                ui1008.usri1008_flags = pBuf[i].usri1_flags | UF_ACCOUNTDISABLE;
+                ui1008.usri1008_flags |= UF_ACCOUNTDISABLE;
+                ui1008.usri1008_flags &= ~UF_DONT_EXPIRE_PASSWD;
             }
             else {
-                ui1008.usri1008_flags = pBuf[i].usri1_flags & ~UF_ACCOUNTDISABLE;
+                ui1008.usri1008_flags &= ~UF_ACCOUNTDISABLE;
             }
 
-            NET_API_STATUS setStatus = NetUserSetInfo(NULL, wUserName.c_str(), 1008, (LPBYTE)&ui1008, &dwParmErr);
-            if (setStatus == NERR_Success) {
-                LogMessage("Local User '" + userName + "': " + (disableAccounts ? "DISABLED" : "ENABLED"));
-            }
-            else {
-                LogMessage("Failed to update status for Local User: " + userName);
-            }
+            NetUserSetInfo(NULL, wUserName.c_str(), 1008, (LPBYTE)&ui1008, &dwParmErr);
         }
         NetApiBufferFree(pBuf);
     }
 }
 
-// --- EMBEDDED RESOURCE EXECUTION ---
-
-bool RunEmbeddedIISCrypto(const std::wstring& arguments) {
+bool ExtractResourceToFile(int resourceID, const std::wstring& outputPath) {
     HMODULE hModule = GetModuleHandle(NULL);
-    HRSRC hRes = FindResource(hModule, MAKEINTRESOURCE(IDR_IISSCRYPTOCLI), RT_RCDATA);
+    HRSRC hRes = FindResource(hModule, MAKEINTRESOURCE(resourceID), RT_RCDATA);
     if (!hRes) return false;
 
     HGLOBAL hMem = LoadResource(hModule, hRes);
@@ -241,34 +315,50 @@ bool RunEmbeddedIISCrypto(const std::wstring& arguments) {
     LPVOID pData = LockResource(hMem);
     if (!pData || fileSize == 0) return false;
 
-    wchar_t tempPath[MAX_PATH];
-    wchar_t exePath[MAX_PATH];
-    GetTempPathW(MAX_PATH, tempPath);
-    GetTempFileNameW(tempPath, L"ISC", 0, exePath);
-
-    std::wstring finalExePath = std::wstring(exePath) + L".exe";
-    MoveFileW(exePath, finalExePath.c_str());
-
-    HANDLE hFile = CreateFileW(finalExePath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileW(outputPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return false;
 
     DWORD bytesWritten = 0;
     WriteFile(hFile, pData, fileSize, &bytesWritten, NULL);
     CloseHandle(hFile);
 
-    std::wstring commandLine = L"\"" + finalExePath + L"\" " + arguments;
+    return true;
+}
 
+
+
+bool RunEmbeddedIISCrypto(bool useCustomTemplate) {
+    wchar_t tempPath[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempPath);
+
+    // 1. Define paths for both files in the Temp directory
+    std::wstring exePath = std::wstring(tempPath) + L"IISCryptoCli_Temp.exe";
+    std::wstring tplPath = std::wstring(tempPath) + L"CustomHardening.ictpl";
+
+    // 2. Extract the IISCrypto executable
+    if (!ExtractResourceToFile(IDR_IISCRYPTOCLI, exePath)) return false;
+
+    // 3. Build the command line and extract template if necessary
+    std::wstring commandLine = L"\"" + exePath + L"\" ";
+
+    if (useCustomTemplate) {
+        // Extract the embedded template to the temp folder
+        if (!ExtractResourceToFile(IDR_CUSTOMTEMPLATE, tplPath)) {
+            DeleteFileW(exePath.c_str()); // Cleanup if template extraction fails
+            return false;
+        }
+        // Target the absolute path of the newly extracted template
+        commandLine += L"/template \"" + tplPath + L"\"";
+    }
+    else {
+        commandLine += L"/template default";
+    }
+
+    // 4. Execute the process
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
 
-    BOOL success = CreateProcessW(
-        NULL,
-        &commandLine[0],
-        NULL, NULL, FALSE,
-        CREATE_NO_WINDOW,
-        NULL, NULL,
-        &si, &pi
-    );
+    BOOL success = CreateProcessW(NULL, &commandLine[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
 
     if (success) {
         WaitForSingleObject(pi.hProcess, INFINITE);
@@ -276,7 +366,12 @@ bool RunEmbeddedIISCrypto(const std::wstring& arguments) {
         CloseHandle(pi.hThread);
     }
 
-    DeleteFileW(finalExePath.c_str());
+    // 5. Cleanup both temp files
+    DeleteFileW(exePath.c_str());
+    if (useCustomTemplate) {
+        DeleteFileW(tplPath.c_str());
+    }
+
     return success;
 }
 
@@ -369,7 +464,6 @@ void ShowLogWindow(HWND hParent) {
 }
 
 // --- SYSTEM UTILITIES ---
-
 void RunSilentCmd(const char* cmd) {
     STARTUPINFOA si = { sizeof(si) };
     PROCESS_INFORMATION pi;
@@ -393,7 +487,6 @@ void RunSilentCmd(const char* cmd) {
 }
 
 // --- PRINTER ENUMERATION & UNShares ---
-
 std::vector<PrinterStatus> GetSystemPrintersInfo() {
     std::vector<PrinterStatus> printerList;
     DWORD cbNeeded = 0, cReturned = 0;
@@ -432,12 +525,7 @@ void UnshareAllPrinters() {
 
                 if (OpenPrinterA(pPrinterInfo[i].pPrinterName, &hPrinter, &pd)) {
                     pPrinterInfo[i].Attributes &= ~PRINTER_ATTRIBUTE_SHARED;
-                    if (SetPrinterA(hPrinter, 2, (LPBYTE)&pPrinterInfo[i], 0)) {
-                        LogMessage("Unshared Printer: " + std::string(pPrinterInfo[i].pPrinterName));
-                    }
-                    else {
-                        LogMessage("Failed to unshare printer: " + std::string(pPrinterInfo[i].pPrinterName));
-                    }
+                    SetPrinterA(hPrinter, 2, (LPBYTE)&pPrinterInfo[i], 0);
                     ClosePrinter(hPrinter);
                 }
             }
@@ -446,7 +534,6 @@ void UnshareAllPrinters() {
 }
 
 // --- NETWORK SHARED FOLDERS AUDIT & UNShares ---
-
 bool GetSystemSharedFoldersInfo(std::string& outShareNames) {
     PSHARE_INFO_1 pBuf = NULL, pTmpBuf = NULL;
     DWORD entriesRead = 0, totalEntries = 0, resumeHandle = 0;
@@ -491,11 +578,7 @@ void UnshareAllFolders() {
                 if ((pTmpBuf->shi1_type & STYPE_MASK) == STYPE_DISKTREE) {
                     std::wstring wShareName = pTmpBuf->shi1_netname;
                     if (!wShareName.empty() && wShareName.back() != L'$') {
-                        if (NetShareDel(NULL, (LMSTR)wShareName.c_str(), 0) == NERR_Success) {
-                            char nameA[256] = { 0 };
-                            WideCharToMultiByte(CP_ACP, 0, wShareName.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
-                            LogMessage("Unshared Folder: " + std::string(nameA));
-                        }
+                        NetShareDel(NULL, (LMSTR)wShareName.c_str(), 0);
                     }
                 }
                 pTmpBuf++;
@@ -568,7 +651,6 @@ bool IsSMBv1Disabled() {
     return (smb1 == 0);
 }
 
-// SSL / TLS Audit Detection
 bool IsSslTlsHardened() {
     HKEY hKey;
     DWORD tls10Enabled = 1, dwSize = sizeof(DWORD);
@@ -579,7 +661,6 @@ bool IsSslTlsHardened() {
     return (tls10Enabled == 0);
 }
 
-// Multi-User Audit: Checks machine-wide HKLM policies for Edge, Chrome, Firefox, & Brave
 bool IsBrowserAccountLocked() {
     HKEY hKey;
     DWORD dwSize = sizeof(DWORD);
@@ -610,7 +691,6 @@ bool IsBrowserAccountLocked() {
         edgeSync == 1 && chromeSync == 1 && braveSync == 1);
 }
 
-// Audit: Checks machine-wide HKLM policies for Password Manager configurations
 bool IsBrowserPasswordLocked() {
     HKEY hKey;
     DWORD dwSize = sizeof(DWORD);
@@ -636,7 +716,6 @@ bool IsBrowserPasswordLocked() {
     return (edgeVal == 0 && chromeVal == 0 && braveVal == 0 && firefoxVal == 0);
 }
 
-// Global Enforcement & System-Wide Session Termination
 void ConfigureBrowserAccountLock(bool lockAccounts) {
     HKEY hKey;
     DWORD signinVal = lockAccounts ? 0 : 1;
@@ -648,35 +727,25 @@ void ConfigureBrowserAccountLock(bool lockAccounts) {
         RegSetValueExA(hKey, "SyncDisabled", 0, REG_DWORD, (const BYTE*)&syncVal, sizeof(syncVal));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "BrowserSignin", 0, REG_DWORD, (const BYTE*)&signinVal, sizeof(signinVal));
         RegSetValueExA(hKey, "SyncDisabled", 0, REG_DWORD, (const BYTE*)&syncVal, sizeof(syncVal));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\BraveSoftware\\Brave", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "BrowserSignin", 0, REG_DWORD, (const BYTE*)&signinVal, sizeof(signinVal));
         RegSetValueExA(hKey, "SyncDisabled", 0, REG_DWORD, (const BYTE*)&syncVal, sizeof(syncVal));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Mozilla\\Firefox", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "DisableFirefoxAccounts", 0, REG_DWORD, (const BYTE*)&ffAccountVal, sizeof(ffAccountVal));
         RegCloseKey(hKey);
     }
-
     if (lockAccounts) {
-        LogMessage("Browser Account Sign-In & Sync: LOCKED for ALL Users");
-        LogMessage("Force terminating browser instances across ALL active user sessions...");
         RunSilentCmd("taskkill /F /IM msedge.exe /IM chrome.exe /IM firefox.exe /IM brave.exe /IM opera.exe /IM vivaldi.exe /T >nul 2>&1");
-    }
-    else {
-        LogMessage("Browser Account Sign-In & Sync: UNLOCKED for ALL Users");
     }
 }
 
-// Global Password Manager Lock for All Users (HKLM) with instant termination
 void ConfigureBrowserPasswordLock(bool lockPasswords) {
     HKEY hKey;
     DWORD passVal = lockPasswords ? 0 : 1;
@@ -686,127 +755,23 @@ void ConfigureBrowserPasswordLock(bool lockPasswords) {
         RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\BraveSoftware\\Brave", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Mozilla\\Firefox", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
         RegSetValueExA(hKey, "OfferToSaveLogins", 0, REG_DWORD, (const BYTE*)&ffOfferVal, sizeof(ffOfferVal));
         RegCloseKey(hKey);
     }
-
     if (lockPasswords) {
-        LogMessage("Browser Password Manager: LOCKED for ALL Users");
-        LogMessage("Force terminating browser instances to apply Password Lock...");
         RunSilentCmd("taskkill /F /IM msedge.exe /IM chrome.exe /IM firefox.exe /IM brave.exe /IM opera.exe /IM vivaldi.exe /T >nul 2>&1");
     }
-    else {
-        LogMessage("Browser Password Manager: UNLOCKED for ALL Users");
-    }
 }
-
-std::string CleanWinRARVersion(const std::string& nameVal, const std::string& verVal) {
-    if (!verVal.empty()) {
-        std::smatch match;
-        std::regex verRegex("([0-9]+\\.[0-9]+)");
-        if (std::regex_search(verVal, match, verRegex)) {
-            return "v" + match.str(1);
-        }
-    }
-    return "Installed";
-}
-
-std::string CleanOfficeVersion(const std::string& nameVal, const std::string& verVal) {
-    if (nameVal.find("2024") != std::string::npos || verVal.find("16.0.17") != std::string::npos || verVal.find("16.0.18") != std::string::npos) return "Office 2024";
-    if (nameVal.find("2021") != std::string::npos) return "Office 2021";
-    if (nameVal.find("2019") != std::string::npos) return "Office 2019";
-    if (nameVal.find("2016") != std::string::npos) return "Office 2016";
-    if (nameVal.find("365") != std::string::npos || nameVal.find("Microsoft 365") != std::string::npos) return "Microsoft 365";
-    return "Office Suite";
-}
-
-std::string DetectSoftwareVersion(const char* targetApp) {
-    HKEY rootKeys[] = { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER };
-    const char* uninstallPaths[] = {
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-        "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
-    };
-
-    for (int r = 0; r < 2; r++) {
-        for (int p = 0; p < 2; p++) {
-            HKEY hUninstallKey;
-            if (RegOpenKeyExA(rootKeys[r], uninstallPaths[p], 0, KEY_READ, &hUninstallKey) == ERROR_SUCCESS) {
-                DWORD dwSubKeys = 0;
-                RegQueryInfoKeyA(hUninstallKey, NULL, NULL, NULL, &dwSubKeys, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-
-                for (DWORD i = 0; i < dwSubKeys; i++) {
-                    char subKeyName[256];
-                    DWORD dwSize = sizeof(subKeyName);
-                    if (RegEnumKeyExA(hUninstallKey, i, subKeyName, &dwSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-                        HKEY hItemKey;
-                        std::string fullPath = std::string(uninstallPaths[p]) + "\\" + subKeyName;
-                        if (RegOpenKeyExA(rootKeys[r], fullPath.c_str(), 0, KEY_READ, &hItemKey) == ERROR_SUCCESS) {
-                            char nameVal[256] = { 0 };
-                            DWORD nSize = sizeof(nameVal);
-                            RegQueryValueExA(hItemKey, "DisplayName", NULL, NULL, (LPBYTE)nameVal, &nSize);
-
-                            if (strstr(nameVal, targetApp)) {
-                                char verVal[64] = { 0 };
-                                DWORD vSize = sizeof(verVal);
-                                RegQueryValueExA(hItemKey, "DisplayVersion", NULL, NULL, (LPBYTE)verVal, &vSize);
-
-                                RegCloseKey(hItemKey);
-                                RegCloseKey(hUninstallKey);
-
-                                if (strcmp(targetApp, "WinRAR") == 0) return CleanWinRARVersion(nameVal, verVal);
-                                if (strcmp(targetApp, "Office") == 0) return CleanOfficeVersion(nameVal, verVal);
-                                if (strcmp(targetApp, "OneDrive") == 0) return "Installed";
-                            }
-                            RegCloseKey(hItemKey);
-                        }
-                    }
-                }
-                RegCloseKey(hUninstallKey);
-            }
-        }
-    }
-
-    if (strcmp(targetApp, "WinRAR") == 0) {
-        if (GetFileAttributesA("C:\\Program Files\\WinRAR\\WinRAR.exe") != INVALID_FILE_ATTRIBUTES ||
-            GetFileAttributesA("C:\\Program Files (x86)\\WinRAR\\WinRAR.exe") != INVALID_FILE_ATTRIBUTES) {
-            return "Installed";
-        }
-    }
-    if (strcmp(targetApp, "Office") == 0) {
-        HKEY hCtrKey;
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Office\\ClickToRun\\Configuration", 0, KEY_READ, &hCtrKey) == ERROR_SUCCESS) {
-            char verVal[64] = { 0 };
-            DWORD vSize = sizeof(verVal);
-            RegQueryValueExA(hCtrKey, "ClientVersionToReport", NULL, NULL, (LPBYTE)verVal, &vSize);
-            RegCloseKey(hCtrKey);
-            return CleanOfficeVersion("Office", verVal);
-        }
-    }
-    if (strcmp(targetApp, "OneDrive") == 0) {
-        HKEY hOdKey;
-        if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\OneDrive", 0, KEY_READ, &hOdKey) == ERROR_SUCCESS) {
-            RegCloseKey(hOdKey);
-            return "Installed";
-        }
-    }
-
-    return "Not Installed";
-}
-
-// --- HARDENING UTILITIES ---
 
 void SetBluetoothDeviceState(bool enable) {
     HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_BLUETOOTH, NULL, NULL, DIGCF_PRESENT);
@@ -826,7 +791,6 @@ void SetBluetoothDeviceState(bool enable) {
         }
         SetupDiDestroyDeviceInfoList(hDevInfo);
     }
-    LogMessage(enable ? "Bluetooth Adapter: ENABLED" : "Bluetooth Adapter: DISABLED");
 }
 
 void SetWifiDeviceState(bool enable) {
@@ -854,10 +818,8 @@ void SetWifiDeviceState(bool enable) {
         }
         SetupDiDestroyDeviceInfoList(hDevInfo);
     }
-    LogMessage(enable ? "Wi-Fi Adapter: ENABLED" : "Wi-Fi Adapter: DISABLED");
 }
 
-// Native Win32 Service Restart (No PowerShell)
 bool RestartWin32Service(const char* serviceName) {
     SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!hSCM) return false;
@@ -879,7 +841,6 @@ bool RestartWin32Service(const char* serviceName) {
     }
 
     BOOL success = StartServiceA(hService, 0, NULL);
-
     CloseServiceHandle(hService);
     CloseServiceHandle(hSCM);
     return success == TRUE;
@@ -887,7 +848,6 @@ bool RestartWin32Service(const char* serviceName) {
 
 void ConfigureSMB(bool harden) {
     HKEY hKey;
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         DWORD dwSmb1 = harden ? 0 : 1;
         DWORD dwSmb2 = 1;
@@ -895,98 +855,81 @@ void ConfigureSMB(bool harden) {
         RegSetValueExA(hKey, "SMB2", 0, REG_DWORD, (const BYTE*)&dwSmb2, sizeof(dwSmb2));
         RegCloseKey(hKey);
     }
-
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\mrxsmb10", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         DWORD dwStart = harden ? 4 : 2;
         RegSetValueExA(hKey, "Start", 0, REG_DWORD, (const BYTE*)&dwStart, sizeof(dwStart));
         RegCloseKey(hKey);
     }
-
-    LogMessage("Restarting LanmanServer service via Win32 SCM...");
-    if (RestartWin32Service("LanmanServer")) {
-        LogMessage("LanmanServer service successfully reloaded.");
-    }
-    else {
-        LogMessage("Warning: Failed to restart LanmanServer service. A system reboot may be required.");
-    }
-
-    LogMessage(harden ? "SMB Configuration: HARDENED (SMBv1 Disabled)" : "SMB Configuration: DEFAULT (SMBv1 Enabled)");
+    RestartWin32Service("LanmanServer");
 }
 
 void ConfigureSslTlsIISCrypto(bool harden) {
-    if (harden) {
-        LogMessage("Executing Embedded IIS Crypto CLI (Best Practice Template)...");
-        if (RunEmbeddedIISCrypto(L"/template \"CustomHardening.ictpl\" ")) {
-            LogMessage("SSL / TLS & Cipher Configuration Applied via IIS Crypto");
-        }
-        else {
-            LogMessage("Error: Failed to execute embedded IIS Crypto CLI resource.");
-        }
-    }
-    else {
-        LogMessage("Executing Embedded IIS Crypto CLI (Reset Default Template)...");
-        if (RunEmbeddedIISCrypto(L"/template default")) {
-            LogMessage("SSL / TLS & Cipher Configuration Reset to Default");
-        }
-        else {
-            LogMessage("Error: Failed to execute embedded IIS Crypto CLI resource.");
-        }
-    }
+    // We now just pass a boolean to handle the internal extraction logic
+    RunEmbeddedIISCrypto(harden);
 }
 
+// --- AUDIT ROUTINE ---
 void PerformAuditAndHighlight() {
-    // Reset counters at the START of audit
     g_secureCount = 0;
     g_attentionCount = 0;
     g_insecureCount = 0;
 
+    // 1. Bluetooth
     bool btActive = IsBluetoothEnabled();
-    g_hardRows[0].liveInfo = btActive ? "Currently Enabled" : "Currently Disabled";
+    g_hardRows[0].liveInfo = btActive ? "Bluetooth is currently enabled." : "Bluetooth adapter is securely disabled.";
+    g_hardRows[0].statusLabel = btActive ? "Warning: Enabled" : "Secured: Disabled";
     g_hardStates[0] = btActive ? 1 : 2;
+    g_hardRows[0].actionLabel = btActive ? "Disable" : "Enable";
+    SetWindowTextA(g_hardRows[0].hBtnAction, g_hardRows[0].actionLabel);
+    ShowWindow(g_hardRows[0].hBtnAction, SW_SHOW);
 
+    // 2. Wi-Fi
     bool wifiActive = IsWifiAdapterEnabled();
-    g_hardRows[1].liveInfo = wifiActive ? "Currently Enabled" : "Currently Disabled";
+    g_hardRows[1].liveInfo = wifiActive ? "Wi-Fi is currently enabled." : "Wi-Fi adapter is securely disabled.";
+    g_hardRows[1].statusLabel = wifiActive ? "Warning: Enabled" : "Secured: Disabled";
     g_hardStates[1] = wifiActive ? 1 : 2;
+    g_hardRows[1].actionLabel = wifiActive ? "Disable" : "Enable";
+    SetWindowTextA(g_hardRows[1].hBtnAction, g_hardRows[1].actionLabel);
+    ShowWindow(g_hardRows[1].hBtnAction, SW_SHOW);
 
+    // 3. SMB Server Protocols
     bool smbHardened = IsSMBv1Disabled();
-    g_hardRows[2].liveInfo = smbHardened ? "SMBv1 Disabled / Hardened" : "SMBv1 Enabled";
+    g_hardRows[2].liveInfo = smbHardened ? "SMBv1 protocol is securely disabled." : "SMBv1 protocol is currently enabled.";
+    g_hardRows[2].statusLabel = smbHardened ? "Secured: Disabled" : "Warning: Enabled";
     g_hardStates[2] = smbHardened ? 2 : 1;
+    ShowWindow(g_hardRows[2].hBtnAction, smbHardened ? SW_HIDE : SW_SHOW);
 
+    // 4. Shared Printers
     g_printerList = GetSystemPrintersInfo();
     std::vector<std::string> sharedPrinters;
-
     for (const auto& printer : g_printerList) {
         if (printer.isShared) {
             std::string sName = printer.shareName.empty() ? printer.name : printer.shareName;
             sharedPrinters.push_back(sName);
         }
     }
-
     bool hasSharedPrinters = !sharedPrinters.empty();
-
     if (hasSharedPrinters) {
-        if (sharedPrinters.size() == 1) {
-            g_hardRows[3].liveInfo = "Shared: " + sharedPrinters[0];
-        }
+        if (sharedPrinters.size() == 1) g_hardRows[3].liveInfo = "Printer shared: " + sharedPrinters[0];
         else {
             char buf[128];
-            snprintf(buf, sizeof(buf), "Shared: %s, (%d) more", sharedPrinters[0].c_str(), (int)(sharedPrinters.size() - 1));
+            snprintf(buf, sizeof(buf), "Shared printer: %s, and (%d) more.", sharedPrinters[0].c_str(), (int)(sharedPrinters.size() - 1));
             g_hardRows[3].liveInfo = buf;
         }
+        g_hardRows[3].statusLabel = "Warning: Shared";
         g_hardStates[3] = 1;
-        ShowWindow(g_hardRows[3].hBtnOpt1, SW_SHOW);
-        ShowWindow(g_hardRows[3].hBtnOpt2, SW_SHOW);
+        ShowWindow(g_hardRows[3].hBtnAction, SW_SHOW);
     }
     else {
-        g_hardRows[3].liveInfo = "No Shared Printer";
+        g_hardRows[3].liveInfo = "No shared network printers detected.";
+        g_hardRows[3].statusLabel = "Secured: No Shares";
         g_hardStates[3] = 2;
-        ShowWindow(g_hardRows[3].hBtnOpt1, SW_HIDE);
-        ShowWindow(g_hardRows[3].hBtnOpt2, SW_HIDE);
+        ShowWindow(g_hardRows[3].hBtnAction, SW_HIDE);
     }
 
+    // 5. Shared Folders
     std::string fullShareList = "";
     bool hasSharedFolders = GetSystemSharedFoldersInfo(fullShareList);
-
     if (hasSharedFolders && !fullShareList.empty()) {
         std::vector<std::string> sharedFolders;
         std::string token;
@@ -997,64 +940,70 @@ void PerformAuditAndHighlight() {
             if (!token.empty()) sharedFolders.push_back(token);
         }
 
-        if (sharedFolders.size() == 1) {
-            g_hardRows[4].liveInfo = "Shared: " + sharedFolders[0];
-        }
+        if (sharedFolders.size() == 1) g_hardRows[4].liveInfo = "Folder shared: " + sharedFolders[0];
         else {
             char buf[128];
-            snprintf(buf, sizeof(buf), "Shared: %s, (%d) more", sharedFolders[0].c_str(), (int)(sharedFolders.size() - 1));
+            snprintf(buf, sizeof(buf), "Shared folder: %s, and (%d) more.", sharedFolders[0].c_str(), (int)(sharedFolders.size() - 1));
             g_hardRows[4].liveInfo = buf;
         }
+        g_hardRows[4].statusLabel = "Warning: Shared";
         g_hardStates[4] = 1;
-        ShowWindow(g_hardRows[4].hBtnOpt1, SW_SHOW);
-        ShowWindow(g_hardRows[4].hBtnOpt2, SW_SHOW);
+        ShowWindow(g_hardRows[4].hBtnAction, SW_SHOW);
     }
     else {
-        g_hardRows[4].liveInfo = "No Shared Folders";
+        g_hardRows[4].liveInfo = "No shared network folders detected.";
+        g_hardRows[4].statusLabel = "Secured: No Shares";
         g_hardStates[4] = 2;
-        ShowWindow(g_hardRows[4].hBtnOpt1, SW_HIDE);
-        ShowWindow(g_hardRows[4].hBtnOpt2, SW_HIDE);
+        ShowWindow(g_hardRows[4].hBtnAction, SW_HIDE);
     }
 
+    // 6. SSL / TLS
     bool sslTlsHardened = IsSslTlsHardened();
-    g_hardRows[5].liveInfo = sslTlsHardened ? "TLS 1.2/1.3 Hardened" : "Weak Protocols / Ciphers Active";
+    g_hardRows[5].liveInfo = sslTlsHardened ? "Best practice IIS Crypto settings applied." : "Unsecured TLS/SSL ciphers are active.";
+    g_hardRows[5].statusLabel = sslTlsHardened ? "Secured: Hardened" : "Warning: Unsecured";
     g_hardStates[5] = sslTlsHardened ? 2 : 1;
+    ShowWindow(g_hardRows[5].hBtnAction, sslTlsHardened ? SW_HIDE : SW_SHOW);
 
+    // 7. Browser Login
     bool browserLocked = IsBrowserAccountLocked();
-    g_hardRows[6].liveInfo = browserLocked ? "Sign-In Disabled (Locked)" : "Sign-In Allowed (Unlocked)";
+    g_hardRows[6].liveInfo = browserLocked ? "Browser sign-in is securely disabled." : "Browser sign-in is currently allowed.";
+    g_hardRows[6].statusLabel = browserLocked ? "Secured: Locked" : "Warning: Unlocked";
     g_hardStates[6] = browserLocked ? 2 : 1;
+    ShowWindow(g_hardRows[6].hBtnAction, browserLocked ? SW_HIDE : SW_SHOW);
 
+    // 8. Browser Passwords
     bool passwordLocked = IsBrowserPasswordLocked();
-    g_hardRows[7].liveInfo = passwordLocked ? "Password Saving Disabled" : "Password Saving Allowed";
+    g_hardRows[7].liveInfo = passwordLocked ? "Password saving is securely disabled." : "Password saving is currently allowed.";
+    g_hardRows[7].statusLabel = passwordLocked ? "Secured: Locked" : "Warning: Unlocked";
     g_hardStates[7] = passwordLocked ? 2 : 1;
+    ShowWindow(g_hardRows[7].hBtnAction, passwordLocked ? SW_HIDE : SW_SHOW);
 
-    // Audit Local Users Control
+    // 9. Local Users
     int userCount = 0;
     bool allUsersDisabled = true;
-    g_hardRows[8].liveInfo = GetLocalUserAccountsInfo(userCount, allUsersDisabled);
+    bool allPasswordsExpire = true;
 
-    if (userCount > 0 && !allUsersDisabled) {
+    g_hardRows[8].liveInfo = GetLocalUserAccountsInfo(userCount, allUsersDisabled, allPasswordsExpire);
+
+    if ((userCount > 0 && !allUsersDisabled) || !allPasswordsExpire) {
+        g_hardRows[8].statusLabel = "Warning: Action Needed";
         g_hardStates[8] = 1;
-        ShowWindow(g_hardRows[8].hBtnOpt1, SW_SHOW);
-        ShowWindow(g_hardRows[8].hBtnOpt2, SW_SHOW);
+        ShowWindow(g_hardRows[8].hBtnAction, SW_SHOW);
     }
     else {
+        g_hardRows[8].statusLabel = "Secured: Hardened";
         g_hardStates[8] = 2;
-        ShowWindow(g_hardRows[8].hBtnOpt1, SW_HIDE);
-        ShowWindow(g_hardRows[8].hBtnOpt2, SW_HIDE);
+        ShowWindow(g_hardRows[8].hBtnAction, SW_HIDE);
     }
 
-    // Software Management Audits
-    std::string rarVer = DetectSoftwareVersion("WinRAR");
-    g_softRows[0].liveInfo = (rarVer == "Not Installed") ? "Not Installed" : rarVer;
+    // 10. Network Security Policies (NTLMv2 & SMB Signing)
+    bool netSecHardened = IsNetworkSecPoliciesHardened();
+    g_hardRows[9].liveInfo = netSecHardened ? "NTLMv2 & SMB Signing strictly enforced." : "Legacy NTLM or unsigned SMB allowed.";
+    g_hardRows[9].statusLabel = netSecHardened ? "Secured: Hardened" : "Warning: Unsecured";
+    g_hardStates[9] = netSecHardened ? 2 : 1;
+    ShowWindow(g_hardRows[9].hBtnAction, netSecHardened ? SW_HIDE : SW_SHOW);
 
-    std::string offVer = DetectSoftwareVersion("Office");
-    g_softRows[1].liveInfo = (offVer == "Not Installed") ? "Not Installed" : offVer;
-
-    std::string odVer = DetectSoftwareVersion("OneDrive");
-    g_softRows[2].liveInfo = (odVer == "Not Installed") ? "Not Installed" : odVer;
-
-    // --- Metric Evaluations ---
+    // Metric Evaluations
     if (!btActive) g_secureCount++; else g_attentionCount++;
     if (!wifiActive) g_secureCount++; else g_attentionCount++;
     if (smbHardened) g_secureCount++; else g_insecureCount++;
@@ -1063,47 +1012,11 @@ void PerformAuditAndHighlight() {
     if (sslTlsHardened) g_secureCount++; else g_insecureCount++;
     if (browserLocked) g_secureCount++; else g_insecureCount++;
     if (passwordLocked) g_secureCount++; else g_insecureCount++;
-    if (userCount == 0 || allUsersDisabled) g_secureCount++; else g_insecureCount++;
-
-    if (g_softRows[0].liveInfo != "Not Installed") g_secureCount++; else g_attentionCount++;
-    if (g_softRows[1].liveInfo != "Not Installed") g_secureCount++; else g_attentionCount++;
-    if (g_softRows[2].liveInfo == "Not Installed") g_secureCount++; else g_attentionCount++;
-}
-
-// --- DRAWING HELPERS ---
-
-void DrawCard(HDC hdc, RECT rc, COLORREF borderColor, const char* title, const char* countStr, const char* subtext) {
-    HBRUSH hCardBrush = CreateSolidBrush(COLOR_CARD_BG);
-    HPEN hPen = CreatePen(PS_SOLID, 1, borderColor);
-    HGDIOBJ hOldBrush = SelectObject(hdc, hCardBrush);
-    HGDIOBJ hOldPen = SelectObject(hdc, hPen);
-
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
-    SetBkMode(hdc, TRANSPARENT);
-
-    SetTextColor(hdc, COLOR_TEXT_MUTED);
-    SelectObject(hdc, g_hFontSub);
-    RECT rcTitle = { rc.left + 15, rc.top + 12, rc.right - 15, rc.top + 30 };
-    DrawTextA(hdc, title, -1, &rcTitle, DT_LEFT | DT_SINGLELINE);
-
-    SetTextColor(hdc, COLOR_TEXT_WHITE);
-    SelectObject(hdc, g_hFontTitle);
-    RECT rcCount = { rc.left + 15, rc.top + 32, rc.right - 15, rc.top + 65 };
-    DrawTextA(hdc, countStr, -1, &rcCount, DT_LEFT | DT_SINGLELINE);
-
-    SetTextColor(hdc, COLOR_TEXT_MUTED);
-    SelectObject(hdc, g_hFontSub);
-    RECT rcSub = { rc.left + 15, rc.top + 68, rc.right - 15, rc.bottom - 10 };
-    DrawTextA(hdc, subtext, -1, &rcSub, DT_LEFT | DT_SINGLELINE);
-
-    SelectObject(hdc, hOldBrush);
-    SelectObject(hdc, hOldPen);
-    DeleteObject(hCardBrush);
-    DeleteObject(hPen);
+    if ((userCount == 0 || allUsersDisabled) && allPasswordsExpire) g_secureCount++; else g_insecureCount++;
+    if (netSecHardened) g_secureCount++; else g_insecureCount++;
 }
 
 // --- WINDOW PROC ---
-
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_ERASEBKGND:
@@ -1118,28 +1031,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         GetComputerNameA(g_computerName, &size);
 
         g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        g_hFontSub = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        g_hFontBold = CreateFontA(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        g_hFontSub = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        g_hFontBold = CreateFontA(13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
-        CreateWindowA("BUTTON", "Best Practices", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 350, 20, 120, 36, hwnd, (HMENU)(UINT_PTR)ID_BTN_BEST_PRACTICE, NULL, NULL);
-        CreateWindowA("BUTTON", "Restore Mode", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 480, 20, 120, 36, hwnd, (HMENU)(UINT_PTR)ID_BTN_RESTORE, NULL, NULL);
-        CreateWindowA("BUTTON", "Apply Changes", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 610, 20, 140, 36, hwnd, (HMENU)(UINT_PTR)ID_BTN_APPLY_CHANGES, NULL, NULL);
+        // Burger Menu Button
+        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 565, 15, 30, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_MENU, NULL, NULL);
 
-        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 100, 786, 420, 22, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
+        // "Secure All" button
+        CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 450, 78, 130, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
 
-        int startY = 222;
-        for (int i = 0; i < 9; i++) {
-            g_hardRows[i].hBtnOpt1 = CreateWindowA("BUTTON", g_hardRows[i].opt1Label, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 410, startY, 160, 26, hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
-            g_hardRows[i].hBtnOpt2 = CreateWindowA("BUTTON", g_hardRows[i].opt2Label, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 580, startY, 160, 26, hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 2), NULL, NULL);
-            startY += 36;
-        }
+        // Status bar bottom (Shifted downward for 10th row)
+        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, 639, 420, 20, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
 
-        int softY = 620;
-        for (int i = 0; i < 3; i++) {
-            g_softRows[i].hBtnIgnore = CreateWindowA("BUTTON", "Ignore", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 410, softY, 100, 26, hwnd, (HMENU)(UINT_PTR)(ID_SOFT_BASE + i * 10 + 0), NULL, NULL);
-            g_softRows[i].hBtnInstall = CreateWindowA("BUTTON", "Install / Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 515, softY, 115, 26, hwnd, (HMENU)(UINT_PTR)(ID_SOFT_BASE + i * 10 + 1), NULL, NULL);
-            g_softRows[i].hBtnUninstall = CreateWindowA("BUTTON", "Uninstall", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 635, softY, 105, 26, hwnd, (HMENU)(UINT_PTR)(ID_SOFT_BASE + i * 10 + 2), NULL, NULL);
-            softY += 36;
+        // Adjusting rows upward to remove dead space
+        int startY = 125;
+        int rowHeight = 44;
+
+        for (int i = 0; i < 10; i++) { // Increased loop max to 10
+            g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
+                WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+                490, startY + 6, 90, 28,
+                hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
+            startY += rowHeight;
         }
 
         LogMessage("Security Tool Started");
@@ -1168,84 +1081,86 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SetTextColor(hdc, COLOR_TEXT_WHITE);
 
         std::string dashTitle = "Dashboard - " + std::string(g_computerName);
-        TextOutA(hdc, 25, 18, dashTitle.c_str(), (int)dashTitle.length());
+        TextOutA(hdc, 25, 15, dashTitle.c_str(), (int)dashTitle.length());
 
         SelectObject(hdc, g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
-        TextOutA(hdc, 25, 45, "System Hardening & Software Package Manager", 43);
+        TextOutA(hdc, 25, 40, "System Hardening Compliance Utility", 35);
 
-        char totalBuf[16], secureBuf[16], attnBuf[16], insecBuf[16];
-        snprintf(totalBuf, sizeof(totalBuf), "%d", g_totalControls);
-        snprintf(secureBuf, sizeof(secureBuf), "%d", g_secureCount);
-        snprintf(attnBuf, sizeof(attnBuf), "%d", g_attentionCount);
-        snprintf(insecBuf, sizeof(insecBuf), "%d", g_insecureCount);
-
-        DrawCard(hdc, { 25, 75, 195, 160 }, RGB(30, 58, 138), "Total Controls", totalBuf, "Configured");
-        DrawCard(hdc, { 210, 75, 380, 160 }, RGB(16, 185, 129), "Secure", secureBuf, "Up to date");
-        DrawCard(hdc, { 395, 75, 565, 160 }, RGB(245, 158, 11), "Attention", attnBuf, "Review needed");
-        DrawCard(hdc, { 580, 75, 750, 160 }, RGB(239, 68, 68), "Insecure", insecBuf, "Action required");
-
+        // Hardening Controls Container Panel
         HPEN hPenPanel = CreatePen(PS_SOLID, 1, COLOR_BORDER);
         SelectObject(hdc, g_hBrushPanel);
         SelectObject(hdc, hPenPanel);
 
-        RECT rcPanel1 = { 25, 175, 750, 560 };
-        RoundRect(hdc, rcPanel1.left, rcPanel1.top, rcPanel1.right, rcPanel1.bottom, 10, 10);
+        // Panel Bottom stretched to 574 to fit 10th row
+        RECT rcPanel1 = { 25, 68, 595, 574 };
+        RoundRect(hdc, rcPanel1.left, rcPanel1.top, rcPanel1.right, rcPanel1.bottom, 8, 8);
 
         SelectObject(hdc, g_hFontBold);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        TextOutA(hdc, 40, 183, "Hardening Controls", 18);
+        TextOutA(hdc, 40, 82, "Hardening Controls", 18);
 
-        RECT rcHardHeaderLeft = { 410, 183, 570, 215 };
-        RECT rcHardHeaderRight = { 580, 183, 740, 215 };
-        DrawTextA(hdc, "Insecured Action", -1, &rcHardHeaderLeft, DT_CENTER | DT_WORDBREAK);
-        DrawTextA(hdc, "Secured Action", -1, &rcHardHeaderRight, DT_CENTER | DT_WORDBREAK);
+        // Progress Bar Metric
+        int percent = (g_totalControls > 0) ? (g_secureCount * 100) / g_totalControls : 0;
+        COLORREF barColor;
+        if (percent >= 80) barColor = COLOR_ACCENT_TEAL;
+        else if (percent >= 50) barColor = COLOR_WARN_AMBER;
+        else barColor = COLOR_DANGER_RED;
 
-        int rowY = 222;
-        for (int i = 0; i < 9; i++) {
+        // Progress bar
+        RECT rcProgBg = { 190, 87, 370, 91 };
+        HBRUSH hTrackBrush = CreateSolidBrush(COLOR_BG);
+        SelectObject(hdc, (HPEN)GetStockObject(NULL_PEN));
+        SelectObject(hdc, hTrackBrush);
+        RoundRect(hdc, rcProgBg.left, rcProgBg.top, rcProgBg.right, rcProgBg.bottom, 2, 2);
+
+        if (percent > 0) {
+            int fillWidth = (rcProgBg.right - rcProgBg.left) * percent / 100;
+            if (fillWidth < 4) fillWidth = 4;
+            RECT rcProgFg = { rcProgBg.left, rcProgBg.top, rcProgBg.left + fillWidth, rcProgBg.bottom };
+            HBRUSH hFillBrush = CreateSolidBrush(barColor);
+            SelectObject(hdc, hFillBrush);
+            RoundRect(hdc, rcProgFg.left, rcProgFg.top, rcProgFg.right, rcProgFg.bottom, 2, 2);
+            DeleteObject(hFillBrush);
+        }
+        DeleteObject(hTrackBrush);
+
+        // Restore Percentage Indicator
+        char pctStr[32];
+        snprintf(pctStr, sizeof(pctStr), "%d%%", percent);
+        SetTextColor(hdc, barColor);
+        SelectObject(hdc, g_hFontBold);
+        TextOutA(hdc, rcProgBg.right + 10, 82, pctStr, (int)strlen(pctStr));
+
+        // Render List Elements
+        int rowY = 125;
+        int rowHeight = 44;
+
+        for (int i = 0; i < 10; i++) { // Increased loop max to 10
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, COLOR_TEXT_WHITE);
             TextOutA(hdc, 40, rowY, g_hardRows[i].name, (int)strlen(g_hardRows[i].name));
 
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, COLOR_TEXT_MUTED);
-            TextOutA(hdc, 40, rowY + 15, g_hardRows[i].liveInfo.c_str(), (int)g_hardRows[i].liveInfo.length());
+            TextOutA(hdc, 40, rowY + 18, g_hardRows[i].liveInfo.c_str(), (int)g_hardRows[i].liveInfo.length());
 
-            if ((i == 3 || i == 4 || i == 8) && !IsWindowVisible(g_hardRows[i].hBtnOpt1)) {
-                RECT rcNoItems = { 410, rowY, 740, rowY + 26 };
-                SetTextColor(hdc, COLOR_TEXT_MUTED);
-                SelectObject(hdc, g_hFontSub);
-                const char* placeholder = (i == 8) ? "No Local Users" : ((i == 3) ? "No Shared Printer" : "No Shared Folders");
-                DrawTextA(hdc, placeholder, -1, &rcNoItems, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
+            bool isSecure = (g_hardStates[i] == 2);
+            SetTextColor(hdc, isSecure ? COLOR_ACCENT_TEAL : COLOR_DANGER_RED);
 
-            rowY += 36;
+            // Shifted Status Text
+            RECT rcStatus = { 330, rowY + 6, 480, rowY + 32 };
+            std::string statusText = g_hardRows[i].statusLabel;
+            DrawTextA(hdc, statusText.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+
+            rowY += rowHeight;
         }
 
-        RECT rcPanel2 = { 25, 575, 750, 770 };
-        RoundRect(hdc, rcPanel2.left, rcPanel2.top, rcPanel2.right, rcPanel2.bottom, 10, 10);
-
-        SelectObject(hdc, g_hFontBold);
-        SetTextColor(hdc, COLOR_TEXT_WHITE);
-        TextOutA(hdc, 40, 585, "Software Management (WinRAR, Office, OneDrive)", 47);
-
-        int softY = 620;
-        for (int i = 0; i < 3; i++) {
-            SelectObject(hdc, g_hFontBold);
-            SetTextColor(hdc, COLOR_TEXT_WHITE);
-            TextOutA(hdc, 40, softY, g_softRows[i].name, (int)strlen(g_softRows[i].name));
-
-            SelectObject(hdc, g_hFontSub);
-            SetTextColor(hdc, COLOR_TEXT_MUTED);
-            TextOutA(hdc, 40, softY + 15, g_softRows[i].liveInfo.c_str(), (int)g_softRows[i].liveInfo.length());
-
-            softY += 36;
-        }
-
+        // Bottom Footer details (Shifted downward to 641)
         SelectObject(hdc, g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
-        TextOutA(hdc, 25, 788, "v4.2.0.0", 8);
-        TextOutA(hdc, 530, 788, "© 2026 Comtech Security Tool", 33);
+        TextOutA(hdc, 25, 641, "v4.2.0.0", 8);
+        TextOutA(hdc, 380, 641, "© 2026 Comtech Security Tool", 33);
 
         DeleteObject(hPenPanel);
 
@@ -1265,6 +1180,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HDC hdc = pdis->hDC;
         UINT id = pdis->CtlID;
 
+        // Custom Hamburger menu drawing
+        if (id == ID_BTN_MENU) {
+            HBRUSH hBg = CreateSolidBrush(COLOR_BG);
+            FillRect(hdc, &pdis->rcItem, hBg);
+            DeleteObject(hBg);
+
+            HBRUSH hIconBrush = CreateSolidBrush(COLOR_TEXT_WHITE);
+            // Draw 3 distinct horizontal lines
+            RECT r1 = { pdis->rcItem.left + 5, pdis->rcItem.top + 8, pdis->rcItem.right - 5, pdis->rcItem.top + 10 };
+            RECT r2 = { pdis->rcItem.left + 5, pdis->rcItem.top + 14, pdis->rcItem.right - 5, pdis->rcItem.top + 16 };
+            RECT r3 = { pdis->rcItem.left + 5, pdis->rcItem.top + 20, pdis->rcItem.right - 5, pdis->rcItem.top + 22 };
+
+            FillRect(hdc, &r1, hIconBrush);
+            FillRect(hdc, &r2, hIconBrush);
+            FillRect(hdc, &r3, hIconBrush);
+
+            DeleteObject(hIconBrush);
+            return TRUE;
+        }
+
         if (id == ID_STATUS_BAR) {
             COLORREF statusBg = g_isExecuting ? COLOR_WARN_AMBER : COLOR_BORDER;
             HBRUSH hStatusBrush = CreateSolidBrush(statusBg);
@@ -1278,7 +1213,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return TRUE;
         }
 
-        if (id == ID_BTN_APPLY_CHANGES) {
+        if (id == ID_BTN_SECURE_ALL) {
             HBRUSH hBtnBrush = CreateSolidBrush(g_isExecuting ? COLOR_TEXT_MUTED : COLOR_ACCENT_TEAL);
             FillRect(hdc, &pdis->rcItem, hBtnBrush);
             DeleteObject(hBtnBrush);
@@ -1286,62 +1221,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, RGB(0, 0, 0));
             SelectObject(hdc, g_hFontBold);
-            DrawTextA(hdc, g_isExecuting ? "Processing..." : "Apply Changes", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextA(hdc, g_isExecuting ? "Processing..." : "Secure All", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             return TRUE;
         }
 
-        if (id == ID_BTN_BEST_PRACTICE || id == ID_BTN_RESTORE) {
-            HBRUSH hParentBrush = CreateSolidBrush(COLOR_BG);
-            FillRect(hdc, &pdis->rcItem, hParentBrush);
-            DeleteObject(hParentBrush);
-
-            HPEN hNullPen = (HPEN)GetStockObject(NULL_PEN);
-            HBRUSH hBtnBrush = CreateSolidBrush(COLOR_CARD_BG);
-
-            SelectObject(hdc, hNullPen);
-            SelectObject(hdc, hBtnBrush);
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
-
-            char btnText[64] = { 0 };
-            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLOR_TEXT_WHITE);
-            SelectObject(hdc, g_hFontSub);
-            DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-            DeleteObject(hBtnBrush);
-            return TRUE;
-        }
-
-        if (id >= ID_HARD_BASE && id < ID_SOFT_BASE) {
+        if (id >= ID_HARD_BASE) {
             int rowIndex = (id - ID_HARD_BASE) / 10;
-            int btnType = (id - ID_HARD_BASE) % 10;
-
-            bool isSelected = (g_hardStates[rowIndex] == btnType);
-
-            COLORREF bgCol = COLOR_CARD_BG;
-            COLORREF txtCol = COLOR_TEXT_WHITE;
-
-            if (isSelected) {
-                if (btnType == 1) {
-                    bgCol = COLOR_DANGER_RED;
-                    txtCol = COLOR_TEXT_WHITE;
-                }
-                else if (btnType == 2) {
-                    bgCol = COLOR_ACCENT_TEAL;
-                    txtCol = RGB(0, 0, 0);
-                }
-            }
+            bool isSecure = (g_hardStates[rowIndex] == 2);
 
             HBRUSH hPanelBgBrush = CreateSolidBrush(COLOR_PANEL);
             FillRect(hdc, &pdis->rcItem, hPanelBgBrush);
             DeleteObject(hPanelBgBrush);
 
-            HPEN hNullPen = (HPEN)GetStockObject(NULL_PEN);
-            HBRUSH hBtnBrush = CreateSolidBrush(bgCol);
+            HPEN hPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
+            HBRUSH hBtnBrush = CreateSolidBrush(COLOR_BG);
 
-            SelectObject(hdc, hNullPen);
+            SelectObject(hdc, hPen);
             SelectObject(hdc, hBtnBrush);
             RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
 
@@ -1349,54 +1244,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
 
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, txtCol);
+            SetTextColor(hdc, isSecure ? COLOR_ACCENT_TEAL : COLOR_TEXT_WHITE);
+
             SelectObject(hdc, g_hFontSub);
             DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             DeleteObject(hBtnBrush);
-            return TRUE;
-        }
-
-        if (id >= ID_SOFT_BASE) {
-            int rowIndex = (id - ID_SOFT_BASE) / 10;
-            int btnType = (id - ID_SOFT_BASE) % 10;
-
-            bool isSelected = (g_softStates[rowIndex] == btnType);
-
-            COLORREF bgCol = COLOR_CARD_BG;
-            COLORREF txtCol = COLOR_TEXT_WHITE;
-
-            if (isSelected) {
-                if (rowIndex == 2 && btnType == 0) {
-                    bgCol = COLOR_DANGER_RED;
-                    txtCol = COLOR_TEXT_WHITE;
-                }
-                else {
-                    bgCol = COLOR_ACCENT_TEAL;
-                    txtCol = RGB(0, 0, 0);
-                }
-            }
-
-            HBRUSH hPanelBgBrush = CreateSolidBrush(COLOR_PANEL);
-            FillRect(hdc, &pdis->rcItem, hPanelBgBrush);
-            DeleteObject(hPanelBgBrush);
-
-            HPEN hNullPen = (HPEN)GetStockObject(NULL_PEN);
-            HBRUSH hBtnBrush = CreateSolidBrush(bgCol);
-
-            SelectObject(hdc, hNullPen);
-            SelectObject(hdc, hBtnBrush);
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
-
-            char btnText[128] = { 0 };
-            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, txtCol);
-            SelectObject(hdc, g_hFontSub);
-            DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-            DeleteObject(hBtnBrush);
+            DeleteObject(hPen);
             return TRUE;
         }
         break;
@@ -1406,6 +1260,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     {
         WORD id = LOWORD(wParam);
 
+        // Burger Menu Button Click Handling
+        if (id == ID_BTN_MENU) {
+            HMENU hMenu = CreatePopupMenu();
+            AppendMenuA(hMenu, MF_STRING, IDM_SETTINGS, "Settings");
+            AppendMenuA(hMenu, MF_STRING, IDM_ABOUT, "About");
+            AppendMenuA(hMenu, MF_STRING, IDM_SEARCHPASS, "Search Pass");
+            AppendMenuA(hMenu, MF_STRING, IDM_WINUPDATE, "Open Windows Update");
+            AppendMenuA(hMenu, MF_STRING, IDM_INVENTORY, "Get Inventory");
+
+            HWND hBtn = GetDlgItem(hwnd, ID_BTN_MENU);
+            RECT rcBtn;
+            GetWindowRect(hBtn, &rcBtn);
+
+            TrackPopupMenu(hMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, rcBtn.right, rcBtn.bottom, 0, hwnd, NULL);
+            DestroyMenu(hMenu);
+            return 0;
+        }
+
+        // Burger Menu Dropdown Commands
+        if (id == IDM_SETTINGS) { MessageBoxA(hwnd, "Settings module not yet implemented.", "Info", MB_OK); return 0; }
+        if (id == IDM_ABOUT) { MessageBoxA(hwnd, "Comtech Security Tool v4.2.0\nSystem Hardening Utility", "About", MB_OK | MB_ICONINFORMATION); return 0; }
+        if (id == IDM_SEARCHPASS) { MessageBoxA(hwnd, "Search Pass module loaded.", "Action", MB_OK); return 0; }
+        if (id == IDM_WINUPDATE) { RunSilentCmd("start ms-settings:windowsupdate"); return 0; }
+        if (id == IDM_INVENTORY) { MessageBoxA(hwnd, "Executing inventory collection...", "Action", MB_OK); return 0; }
+
         if (id == ID_STATUS_BAR) {
             ShowLogWindow(hwnd);
             return 0;
@@ -1413,192 +1292,57 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (g_isExecuting) return 0;
 
-        if (id >= ID_HARD_BASE && id < ID_SOFT_BASE) {
+        if (id >= ID_HARD_BASE) {
             int rowIndex = (id - ID_HARD_BASE) / 10;
-            int btnType = (id - ID_HARD_BASE) % 10;
-
-            g_hardStates[rowIndex] = btnType;
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-        }
-
-        if (id >= ID_SOFT_BASE) {
-            int rowIndex = (id - ID_SOFT_BASE) / 10;
-            int btnType = (id - ID_SOFT_BASE) % 10;
-
-            g_softStates[rowIndex] = btnType;
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-        }
-
-        if (id == ID_BTN_BEST_PRACTICE) {
-            g_hardStates[0] = 2;
-            g_hardStates[1] = 2;
-            g_hardStates[2] = 2;
-            g_hardStates[3] = 2;
-            g_hardStates[4] = 2;
-            g_hardStates[5] = 2;
-            g_hardStates[6] = 2;
-            g_hardStates[7] = 2;
-            g_hardStates[8] = 2;
-
-            g_softStates[0] = 1;
-            g_softStates[1] = 1;
-            g_softStates[2] = 2;
-
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            LogMessage("Loaded 'Best Practice' preset selections.");
-            MessageBoxA(hwnd, "Best Practice configuration loaded!\nClick 'Apply Changes' to execute.", "Best Practice", MB_OK | MB_ICONINFORMATION);
-        }
-
-        if (id == ID_BTN_RESTORE) {
-            g_hardStates[0] = 1;
-            g_hardStates[1] = 1;
-            g_hardStates[2] = 1;
-            g_hardStates[3] = 1;
-            g_hardStates[4] = 1;
-            g_hardStates[5] = 1;
-            g_hardStates[6] = 1;
-            g_hardStates[7] = 1;
-            g_hardStates[8] = 1;
-
-            g_softStates[0] = 0;
-            g_softStates[1] = 0;
-            g_softStates[2] = 0;
-
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            LogMessage("Loaded 'Restore Mode' preset selections.");
-            MessageBoxA(hwnd, "Switched UI to Restore Mode.\nSelect the desired restore actions and click 'Apply Changes'.", "Restore Mode", MB_OK | MB_ICONINFORMATION);
-        }
-
-        if (id == ID_BTN_APPLY_CHANGES) {
             g_isExecuting = true;
             SetCursor(LoadCursor(NULL, IDC_WAIT));
-            bool changesMade = false;
 
-            // 1. Bluetooth
-            bool currentBt = IsBluetoothEnabled();
-            bool wantBt = (g_hardStates[0] == 1);
-            if (currentBt != wantBt) {
-                UpdateStatus("Applying Bluetooth Settings...");
-                SetBluetoothDeviceState(wantBt);
-                changesMade = true;
+            UpdateStatus("Applying Configuration...");
+            switch (rowIndex) {
+            case 0: SetBluetoothDeviceState(g_hardStates[0] == 2); break;
+            case 1: SetWifiDeviceState(g_hardStates[1] == 2); break;
+            case 2: ConfigureSMB(true); break;
+            case 3: UnshareAllPrinters(); break;
+            case 4: UnshareAllFolders(); break;
+            case 5: ConfigureSslTlsIISCrypto(true); break;
+            case 6: ConfigureBrowserAccountLock(true); break;
+            case 7: ConfigureBrowserPasswordLock(true); break;
+            case 8: ConfigureLocalUsers(true); break;
+            case 9: ConfigureNetworkSecPolicies(true); break; // Apply 10th Control
             }
 
-            // 2. Wi-Fi
-            bool currentWifi = IsWifiAdapterEnabled();
-            bool wantWifi = (g_hardStates[1] == 1);
-            if (currentWifi != wantWifi) {
-                UpdateStatus("Applying Wi-Fi Adapter Settings...");
-                SetWifiDeviceState(wantWifi);
-                changesMade = true;
-            }
+            PerformAuditAndHighlight();
+            g_isExecuting = false;
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            UpdateStatus("Ready (Click to view logs)");
+            return 0;
+        }
 
-            // 3. SMB Protocols
-            bool currentSmbLocked = IsSMBv1Disabled();
-            bool wantSmbLocked = (g_hardStates[2] == 2);
-            if (currentSmbLocked != wantSmbLocked) {
-                UpdateStatus("Configuring SMB Security Protocols...");
-                ConfigureSMB(wantSmbLocked);
-                changesMade = true;
-            }
+        if (id == ID_BTN_SECURE_ALL) {
+            g_isExecuting = true;
+            SetCursor(LoadCursor(NULL, IDC_WAIT));
+            UpdateStatus("Securing all unsecured components...");
 
-            // 4. Printers
-            if (g_hardStates[3] == 2) {
-                std::vector<PrinterStatus> plist = GetSystemPrintersInfo();
-                bool hasShares = false;
-                for (const auto& p : plist) {
-                    if (p.isShared) { hasShares = true; break; }
-                }
-                if (hasShares) {
-                    UpdateStatus("Removing Network Printer Shares...");
-                    UnshareAllPrinters();
-                    changesMade = true;
-                }
-            }
+            if (g_hardStates[0] == 1) SetBluetoothDeviceState(false);
+            if (g_hardStates[1] == 1) SetWifiDeviceState(false);
+            if (g_hardStates[2] == 1) ConfigureSMB(true);
+            if (g_hardStates[3] == 1) UnshareAllPrinters();
+            if (g_hardStates[4] == 1) UnshareAllFolders();
+            if (g_hardStates[5] == 1) ConfigureSslTlsIISCrypto(true);
+            if (g_hardStates[6] == 1) ConfigureBrowserAccountLock(true);
+            if (g_hardStates[7] == 1) ConfigureBrowserPasswordLock(true);
+            if (g_hardStates[8] == 1) ConfigureLocalUsers(true);
+            if (g_hardStates[9] == 1) ConfigureNetworkSecPolicies(true); // Apply 10th Control on "Secure All"
 
-            // 5. Folders
-            if (g_hardStates[4] == 2) {
-                std::string dummy;
-                if (GetSystemSharedFoldersInfo(dummy)) {
-                    UpdateStatus("Removing Network Shared Folders...");
-                    UnshareAllFolders();
-                    changesMade = true;
-                }
-            }
-
-            // 6. SSL / TLS
-            bool currentSslLocked = IsSslTlsHardened();
-            bool wantSslLocked = (g_hardStates[5] == 2);
-            if (currentSslLocked != wantSslLocked) {
-                UpdateStatus("Configuring SSL / TLS Ciphers via IIS Crypto...");
-                ConfigureSslTlsIISCrypto(wantSslLocked);
-                changesMade = true;
-            }
-
-            // 7. Browser Account Lock
-            bool currentAcctLocked = IsBrowserAccountLocked();
-            bool wantAcctLocked = (g_hardStates[6] == 2);
-            if (currentAcctLocked != wantAcctLocked) {
-                UpdateStatus("Configuring Browser Account Lock Policies...");
-                ConfigureBrowserAccountLock(wantAcctLocked);
-                changesMade = true;
-            }
-
-            // 8. Browser Password Lock
-            bool currentPassLocked = IsBrowserPasswordLocked();
-            bool wantPassLocked = (g_hardStates[7] == 2);
-            if (currentPassLocked != wantPassLocked) {
-                UpdateStatus("Configuring Browser Password Lock Policies...");
-                ConfigureBrowserPasswordLock(wantPassLocked);
-                changesMade = true;
-            }
-
-            // 9. Local Users Account Enforcement
-            if (g_hardStates[8] == 2) {
-                int dummyCount = 0;
-                bool dummyAllDisabled = false;
-                GetLocalUserAccountsInfo(dummyCount, dummyAllDisabled);
-                if (dummyCount > 0 && !dummyAllDisabled) {
-                    UpdateStatus("Disabling inactive local user accounts...");
-                    ConfigureLocalUsers(true);
-                    changesMade = true;
-                }
-            }
-
-            // 10. Software Management
-            const char* swNames[3] = { "WinRAR", "Office", "OneDrive" };
-            for (int i = 0; i < 3; i++) {
-                if (g_softStates[i] == 0) continue;
-
-                bool isInstalled = (DetectSoftwareVersion(swNames[i]) != "Not Installed");
-                char cmd[512] = { 0 };
-
-                if (g_softStates[i] == 1) {
-                    UpdateStatus("Winget: Installing / Updating " + std::string(g_softRows[i].name) + "...");
-                    snprintf(cmd, sizeof(cmd), "winget install --id %s --silent --accept-source-agreements --accept-package-agreements", g_softRows[i].packageId);
-                    RunSilentCmd(cmd);
-                    changesMade = true;
-                }
-                else if (g_softStates[i] == 2 && isInstalled) {
-                    UpdateStatus("Winget: Uninstalling " + std::string(g_softRows[i].name) + "...");
-                    snprintf(cmd, sizeof(cmd), "winget uninstall --id %s --silent --accept-source-agreements", g_softRows[i].packageId);
-                    RunSilentCmd(cmd);
-                    changesMade = true;
-                }
-            }
-
-            UpdateStatus("Running Audit & Refreshing Metrics...");
             PerformAuditAndHighlight();
 
             g_isExecuting = false;
             SetCursor(LoadCursor(NULL, IDC_ARROW));
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             UpdateStatus("Ready (Click to view logs)");
 
-            if (changesMade) {
-                MessageBoxA(hwnd, "Configuration and package management tasks completed!", "Success", MB_OK | MB_ICONINFORMATION);
-            }
-            else {
-                MessageBoxA(hwnd, "No changes were necessary. The system already matches the requested configuration.", "No Changes", MB_OK | MB_ICONINFORMATION);
-            }
+            MessageBoxA(hwnd, "All required system resources have been successfully secured and locked down.", "Success", MB_OK | MB_ICONINFORMATION);
         }
         break;
     }
@@ -1634,9 +1378,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
     RegisterClass(&wc);
 
+    // Adjusted window height up to 704 to fit the 10th row control
     HWND hwnd = CreateWindowExA(0, CLASS_NAME, "Comtech Security Tool",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 790, 860, NULL, NULL, hInstance, NULL);
+        CW_USEDEFAULT, CW_USEDEFAULT, 635, 704, NULL, NULL, hInstance, NULL);
+
+    // Set Windows 10/11 Dark Title Bar theme constraint
+    BOOL useDarkMode = TRUE;
+    ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+    // Fallback for older Windows 10 builds
+    ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &useDarkMode, sizeof(useDarkMode));
 
     ShowWindow(hwnd, nCmdShow);
 

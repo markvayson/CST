@@ -15,7 +15,8 @@
 #define IDI_ICON1                       129
 #define IDR_RCDATA1                     132
 #define IDC_STATIC                      -1
-#define IDR_IISSCRYPTOCLI				201
+#define IDR_IISCRYPTOCLI				201
+#define IDR_CUSTOMTEMPLATE				202
 
 // Next default values for new objects
 // 
