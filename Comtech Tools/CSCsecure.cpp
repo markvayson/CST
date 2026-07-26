@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#include "CSCsecure.h"
 #include <windows.h>
 #include <commctrl.h>
 #include <setupapi.h>
@@ -16,7 +17,7 @@
 #include "Resource.h"
 #include <sstream>
 #include <d2d1.h>
-#include <dwmapi.h> // Added for Dark Mode Title Bar
+#include <dwmapi.h> 
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -24,7 +25,46 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "winspool.lib")
 #pragma comment(lib, "netapi32.lib")
-#pragma comment(lib, "dwmapi.lib") // Added for Dark Mode Title Bar
+#pragma comment(lib, "dwmapi.lib") 
+#pragma comment(lib, "version.lib")
+
+// Retrieves a StringFileInfo entry from VS_VERSION_INFO in resources
+std::string GetFileVersionValue(const char* valueName) {
+    char szPath[MAX_PATH];
+    if (!GetModuleFileNameA(NULL, szPath, MAX_PATH)) return "";
+
+    DWORD dwDummy = 0;
+    DWORD dwSize = GetFileVersionInfoSizeA(szPath, &dwDummy);
+    if (dwSize == 0) return "";
+
+    std::vector<BYTE> data(dwSize);
+    if (!GetFileVersionInfoA(szPath, 0, dwSize, data.data())) return "";
+
+    // Query translation table block dynamically
+    struct LANGANDCODEPAGE {
+        WORD wLanguage;
+        WORD wCodePage;
+    } *pTranslate = nullptr;
+    UINT cbTranslate = 0;
+
+    char subBlock[256];
+    if (VerQueryValueA(data.data(), "\\VarFileInfo\\Translation", (LPVOID*)&pTranslate, &cbTranslate) && cbTranslate >= sizeof(LANGANDCODEPAGE)) {
+        snprintf(subBlock, sizeof(subBlock), "\\StringFileInfo\\%04x%04x\\%s",
+            pTranslate[0].wLanguage, pTranslate[0].wCodePage, valueName);
+    }
+    else {
+        // Fallback to English/Unicode (040904b0) as defined in cscsecure.rc
+        snprintf(subBlock, sizeof(subBlock), "\\StringFileInfo\\040904b0\\%s", valueName);
+    }
+
+    LPVOID lpBuffer = NULL;
+    UINT len = 0;
+    if (VerQueryValueA(data.data(), subBlock, &lpBuffer, &len) && lpBuffer && len > 0) {
+        return std::string(static_cast<char*>(lpBuffer));
+    }
+
+    return "";
+}
 
 // Dark Mode Title Bar Attributes
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -66,7 +106,6 @@ template <class T> void SafeRelease(T** ppT) {
 #define ID_BTN_MENU          1006
 #define ID_HARD_BASE         2000
 
-#define IDM_SETTINGS         3001
 #define IDM_ABOUT            3002
 #define IDM_SEARCHPASS       3003
 #define IDM_WINUPDATE        3004
@@ -98,16 +137,23 @@ std::string g_statusText = "Ready (Click to view logs)";
 bool g_isExecuting = false;
 std::vector<std::string> g_logMemory;
 
-// System Hostname
+// System Hostname & OS 
 char g_computerName[MAX_COMPUTERNAME_LENGTH + 1] = "UNKNOWN";
+std::string g_osVersion = "Windows 11 25H2";
 
-// Metric Counts (10 Hardening items total)
+// Metric Counts 
 int g_totalControls = 10;
 int g_secureCount = 0;
 int g_attentionCount = 0;
 int g_insecureCount = 0;
 
 int g_hardStates[10] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2 };
+
+// Dynamic Version Globals
+std::string g_appProductName = "CSCsecure";
+std::string g_appVersion = "3.1.0";
+std::string g_appDescription = "System Hardening Utility";
+std::string g_footerVersionStr = "CSCsecure v3.1.0 \xA9 2026";
 
 struct HardeningRow {
     const char* name;
@@ -142,6 +188,232 @@ std::vector<PrinterStatus> g_printerList;
 void LogMessage(const std::string& msg);
 void UpdateStatus(const std::string& msg);
 
+// --- DYNAMIC VERSION LOADER ---
+void LoadVersionInfoFromResource() {
+    std::string name = GetFileVersionValue("ProductName");
+    std::string ver = GetFileVersionValue("ProductVersion");
+    std::string desc = GetFileVersionValue("FileDescription");
+
+    if (!name.empty()) g_appProductName = name;
+    if (!ver.empty()) g_appVersion = ver;
+    if (!desc.empty()) g_appDescription = desc;
+
+    if (!g_appProductName.empty() && !g_appVersion.empty()) {
+        g_footerVersionStr = g_appProductName + " v" + g_appVersion + " \xA9 2026";
+    }
+}
+
+// --- CUSTOM NATIVE CONFIRMATION DIALOG ---
+bool g_confirmResult = false;
+std::string g_confirmMsg = "";
+
+LRESULT CALLBACK ConfirmWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+    case WM_CREATE: {
+        CreateWindowA("BUTTON", "Confirm", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 35, 90, 90, 30, hwnd, (HMENU)1, NULL, NULL);
+        CreateWindowA("BUTTON", "Cancel", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 145, 90, 90, 30, hwnd, (HMENU)2, NULL, NULL);
+        break;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+
+        FillRect(hdc, &rc, g_hBrushBg);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontSub);
+
+        RECT textRc = { 15, 25, rc.right - 15, 75 };
+        DrawTextA(hdc, g_confirmMsg.c_str(), -1, &textRc, DT_CENTER | DT_WORDBREAK);
+
+        EndPaint(hwnd, &ps);
+        break;
+    }
+    case WM_DRAWITEM: {
+        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+        HDC hdc = pdis->hDC;
+        bool isConfirm = (pdis->CtlID == 1);
+
+        HBRUSH hBtnBrush = CreateSolidBrush(isConfirm ? COLOR_DANGER_RED : COLOR_PANEL);
+        FillRect(hdc, &pdis->rcItem, hBtnBrush);
+        DeleteObject(hBtnBrush);
+
+        HPEN hPen = CreatePen(PS_SOLID, 1, isConfirm ? COLOR_DANGER_RED : COLOR_BORDER);
+        SelectObject(hdc, hPen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
+        DeleteObject(hPen);
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontBold);
+        DrawTextA(hdc, isConfirm ? "Confirm" : "Cancel", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return TRUE;
+    }
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == 1) { g_confirmResult = true; PostMessage(hwnd, WM_CLOSE, 0, 0); }
+        if (LOWORD(wParam) == 2) { g_confirmResult = false; PostMessage(hwnd, WM_CLOSE, 0, 0); }
+        break;
+    }
+    case WM_CLOSE: {
+        EnableWindow(GetParent(hwnd), TRUE);
+        SetForegroundWindow(GetParent(hwnd));
+        DestroyWindow(hwnd);
+        break;
+    }
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+bool ShowDarkConfirmDialog(HWND hParent, const char* msg) {
+    g_confirmMsg = msg;
+    g_confirmResult = false;
+
+    WNDCLASS wc = { 0 };
+    wc.lpfnWndProc = ConfirmWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "DarkConfirmDialog";
+    wc.hbrBackground = g_hBrushBg;
+    RegisterClass(&wc);
+
+    HWND hConfirm = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+        "DarkConfirmDialog", "Action Required",
+        WS_POPUP | WS_BORDER | WS_CAPTION,
+        0, 0, 285, 170, hParent, NULL, GetModuleHandle(NULL), NULL);
+
+    RECT rcParent; GetWindowRect(hParent, &rcParent);
+    SetWindowPos(hConfirm, NULL,
+        rcParent.left + (rcParent.right - rcParent.left) / 2 - 142,
+        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 85,
+        285, 170, SWP_NOZORDER);
+
+    BOOL useDarkMode = TRUE;
+    ::DwmSetWindowAttribute(hConfirm, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+    EnableWindow(hParent, FALSE);
+    ShowWindow(hConfirm, SW_SHOW);
+
+    MSG wmsg;
+    while (IsWindow(hConfirm) && GetMessage(&wmsg, NULL, 0, 0)) {
+        TranslateMessage(&wmsg);
+        DispatchMessage(&wmsg);
+    }
+    return g_confirmResult;
+}
+
+// --- CUSTOM NATIVE BURGER MENU POPUP DIALOG ---
+LRESULT CALLBACK MenuPopupWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+    case WM_CREATE: {
+        int y = 50;
+        int btnWidth = 240;
+        int btnHeight = 34;
+        int spacing = 10;
+
+        CreateWindowA("BUTTON", "About", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_ABOUT, NULL, NULL);
+        y += btnHeight + spacing;
+        CreateWindowA("BUTTON", "Search Pass", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_SEARCHPASS, NULL, NULL);
+        y += btnHeight + spacing;
+        CreateWindowA("BUTTON", "Open Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_WINUPDATE, NULL, NULL);
+        y += btnHeight + spacing;
+        CreateWindowA("BUTTON", "Get Inventory", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_INVENTORY, NULL, NULL);
+        y += btnHeight + spacing + 5;
+        CreateWindowA("BUTTON", "Close", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDCANCEL, NULL, NULL);
+        break;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+
+        FillRect(hdc, &rc, g_hBrushBg);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontTitle);
+
+        RECT titleRc = { 0, 12, rc.right, 42 };
+        DrawTextA(hdc, "Menu Options", -1, &titleRc, DT_CENTER | DT_SINGLELINE);
+
+        EndPaint(hwnd, &ps);
+        break;
+    }
+    case WM_DRAWITEM: {
+        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+        HDC hdc = pdis->hDC;
+        UINT id = pdis->CtlID;
+
+        bool isClose = (id == IDCANCEL);
+        HBRUSH hBtnBrush = CreateSolidBrush(isClose ? COLOR_PANEL : COLOR_CARD_BG);
+        FillRect(hdc, &pdis->rcItem, hBtnBrush);
+        DeleteObject(hBtnBrush);
+
+        HPEN hPen = CreatePen(PS_SOLID, 1, isClose ? COLOR_BORDER : COLOR_ACCENT_TEAL);
+        SelectObject(hdc, hPen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
+        DeleteObject(hPen);
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, isClose ? COLOR_TEXT_MUTED : COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontBold);
+
+        char btnText[64] = { 0 };
+        GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
+        DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return TRUE;
+    }
+    case WM_COMMAND: {
+        WORD id = LOWORD(wParam);
+        HWND hParent = GetParent(hwnd);
+        PostMessage(hwnd, WM_CLOSE, 0, 0);
+        if (id != IDCANCEL && hParent) {
+            PostMessage(hParent, WM_COMMAND, wParam, lParam);
+        }
+        break;
+    }
+    case WM_CLOSE: {
+        EnableWindow(GetParent(hwnd), TRUE);
+        SetForegroundWindow(GetParent(hwnd));
+        DestroyWindow(hwnd);
+        break;
+    }
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+void ShowDarkMenuDialog(HWND hParent) {
+    WNDCLASS wc = { 0 };
+    wc.lpfnWndProc = MenuPopupWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "DarkMenuPopupDialog";
+    wc.hbrBackground = g_hBrushBg;
+    RegisterClass(&wc);
+
+    HWND hPopup = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+        "DarkMenuPopupDialog", "CSCsecure Menu",
+        WS_POPUP | WS_BORDER | WS_CAPTION,
+        0, 0, 305, 360, hParent, NULL, GetModuleHandle(NULL), NULL);
+
+    RECT rcParent; GetWindowRect(hParent, &rcParent);
+    SetWindowPos(hPopup, NULL,
+        rcParent.left + (rcParent.right - rcParent.left) / 2 - 152,
+        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 180,
+        305, 360, SWP_NOZORDER);
+
+    BOOL useDarkMode = TRUE;
+    ::DwmSetWindowAttribute(hPopup, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+    EnableWindow(hParent, FALSE);
+    ShowWindow(hPopup, SW_SHOW);
+
+    MSG wmsg;
+    while (IsWindow(hPopup) && GetMessage(&wmsg, NULL, 0, 0)) {
+        TranslateMessage(&wmsg);
+        DispatchMessage(&wmsg);
+    }
+}
+
 // --- NETWORK SECURITY POLICIES AUDIT & HARDENING ---
 bool IsNetworkSecPoliciesHardened() {
     HKEY hKey;
@@ -163,15 +435,6 @@ bool IsNetworkSecPoliciesHardened() {
         RegQueryValueExA(hKey, "RequireSecuritySignature", NULL, NULL, (LPBYTE)&clientReq, &dwSize);
         RegCloseKey(hKey);
     }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) { // Optional check or check standard LDAP path below
-        // Handled via NTDS / LDAP policies
-    }
-
-    // Standard path for LDAP client signing (LDAPClientIntegrity)
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\Tcpip", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        // Just checking base registry for LDAP client path: SYSTEM\\CurrentControlSet\\Services\\LDAP
-        RegCloseKey(hKey);
-    }
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LDAP", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         RegQueryValueExA(hKey, "LDAPClientIntegrity", NULL, NULL, (LPBYTE)&ldapSigning, &dwSize);
         RegCloseKey(hKey);
@@ -180,37 +443,31 @@ bool IsNetworkSecPoliciesHardened() {
     return (lmCompat == 5 && serverReq == 1 && clientReq == 1 &&
         restrictAnon >= 1 && restrictSam >= 1 && ldapSigning >= 2);
 }
+
 void ConfigureNetworkSecPolicies(bool harden) {
     HKEY hKey;
     DWORD lmCompat = harden ? 5 : 0;
     DWORD sigEnabled = harden ? 1 : 0;
     DWORD sigRequired = harden ? 1 : 0;
-    DWORD restrictVal = harden ? 1 : 0; // 1 = Do not allow enumeration of SAM accounts/shares anonymously
-    DWORD ldapVal = harden ? 2 : 0;     // 1 = Negotiate signing, 2 = Require signing
+    DWORD restrictVal = harden ? 1 : 0;
+    DWORD ldapVal = harden ? 2 : 0;
 
-    // LSA Settings (Includes Anonymous Enumeration & NTLM)
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Lsa", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "LmCompatibilityLevel", 0, REG_DWORD, (const BYTE*)&lmCompat, sizeof(lmCompat));
         RegSetValueExA(hKey, "RestrictAnonymous", 0, REG_DWORD, (const BYTE*)&restrictVal, sizeof(restrictVal));
         RegSetValueExA(hKey, "RestrictAnonymousSAM", 0, REG_DWORD, (const BYTE*)&restrictVal, sizeof(restrictVal));
         RegCloseKey(hKey);
     }
-
-    // SMB Server Settings
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "EnableSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigEnabled, sizeof(sigEnabled));
         RegSetValueExA(hKey, "RequireSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigRequired, sizeof(sigRequired));
         RegCloseKey(hKey);
     }
-
-    // SMB Workstation Settings
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "EnableSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigEnabled, sizeof(sigEnabled));
         RegSetValueExA(hKey, "RequireSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigRequired, sizeof(sigRequired));
         RegCloseKey(hKey);
     }
-
-    // LDAP Client Signing Requirements
     if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LDAP", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExA(hKey, "LDAPClientIntegrity", 0, REG_DWORD, (const BYTE*)&ldapVal, sizeof(ldapVal));
         RegCloseKey(hKey);
@@ -241,7 +498,6 @@ std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bo
                 outAllDisabled = false;
                 activeUsers.push_back(userName);
             }
-
             if (pBuf[i].usri1_flags & UF_DONT_EXPIRE_PASSWD) {
                 outAllPasswordsExpire = false;
             }
@@ -268,7 +524,6 @@ std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bo
         if (outAllDisabled) return "Accounts disabled, but 'Password never expires' is enabled.";
         return baseMsg + " (Pass never expires is ticked).";
     }
-
     return baseMsg;
 }
 
@@ -288,7 +543,6 @@ void ConfigureLocalUsers(bool disableAccounts) {
             DWORD dwParmErr = 0;
 
             ui1008.usri1008_flags = pBuf[i].usri1_flags;
-
             if (disableAccounts) {
                 ui1008.usri1008_flags |= UF_ACCOUNTDISABLE;
                 ui1008.usri1008_flags &= ~UF_DONT_EXPIRE_PASSWD;
@@ -296,7 +550,6 @@ void ConfigureLocalUsers(bool disableAccounts) {
             else {
                 ui1008.usri1008_flags &= ~UF_ACCOUNTDISABLE;
             }
-
             NetUserSetInfo(NULL, wUserName.c_str(), 1008, (LPBYTE)&ui1008, &dwParmErr);
         }
         NetApiBufferFree(pBuf);
@@ -325,39 +578,29 @@ bool ExtractResourceToFile(int resourceID, const std::wstring& outputPath) {
     return true;
 }
 
-
-
 bool RunEmbeddedIISCrypto(bool useCustomTemplate) {
     wchar_t tempPath[MAX_PATH];
     GetTempPathW(MAX_PATH, tempPath);
 
-    // 1. Define paths for both files in the Temp directory
     std::wstring exePath = std::wstring(tempPath) + L"IISCryptoCli_Temp.exe";
     std::wstring tplPath = std::wstring(tempPath) + L"CustomHardening.ictpl";
 
-    // 2. Extract the IISCrypto executable
     if (!ExtractResourceToFile(IDR_IISCRYPTOCLI, exePath)) return false;
 
-    // 3. Build the command line and extract template if necessary
     std::wstring commandLine = L"\"" + exePath + L"\" ";
-
     if (useCustomTemplate) {
-        // Extract the embedded template to the temp folder
         if (!ExtractResourceToFile(IDR_CUSTOMTEMPLATE, tplPath)) {
-            DeleteFileW(exePath.c_str()); // Cleanup if template extraction fails
+            DeleteFileW(exePath.c_str());
             return false;
         }
-        // Target the absolute path of the newly extracted template
         commandLine += L"/template \"" + tplPath + L"\"";
     }
     else {
         commandLine += L"/template default";
     }
 
-    // 4. Execute the process
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
-
     BOOL success = CreateProcessW(NULL, &commandLine[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
 
     if (success) {
@@ -366,7 +609,6 @@ bool RunEmbeddedIISCrypto(bool useCustomTemplate) {
         CloseHandle(pi.hThread);
     }
 
-    // 5. Cleanup both temp files
     DeleteFileW(exePath.c_str());
     if (useCustomTemplate) {
         DeleteFileW(tplPath.c_str());
@@ -375,7 +617,6 @@ bool RunEmbeddedIISCrypto(bool useCustomTemplate) {
     return success;
 }
 
-// Log File & Status Dispatcher
 void LogMessage(const std::string& msg) {
     time_t rawtime;
     struct tm timeinfo;
@@ -415,20 +656,15 @@ void UpdateStatus(const std::string& msg) {
 
 LRESULT CALLBACK LogWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
-    case WM_CREATE:
-    {
-        RECT rc;
-        GetClientRect(hwnd, &rc);
+    case WM_CREATE: {
+        RECT rc; GetClientRect(hwnd, &rc);
         g_hLogEdit = CreateWindowExA(0, "EDIT", "",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
             0, 0, rc.right, rc.bottom, hwnd, (HMENU)(UINT_PTR)ID_LOG_EDIT, NULL, NULL);
 
         SendMessageA(g_hLogEdit, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
-
         std::string fullLogText = "";
-        for (const auto& line : g_logMemory) {
-            fullLogText += line + "\r\n";
-        }
+        for (const auto& line : g_logMemory) fullLogText += line + "\r\n";
         SetWindowTextA(g_hLogEdit, fullLogText.c_str());
         break;
     }
@@ -449,7 +685,6 @@ void ShowLogWindow(HWND hParent) {
         SetForegroundWindow(g_hLogWnd);
         return;
     }
-
     const char LOG_CLASS[] = "SecurityToolLogViewer";
     WNDCLASS wc = {};
     wc.lpfnWndProc = LogWindowProc;
@@ -458,12 +693,10 @@ void ShowLogWindow(HWND hParent) {
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClass(&wc);
 
-    g_hLogWnd = CreateWindowExA(0, LOG_CLASS, "Execution Logs - Comtech Security Tool",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, 700, 450, hParent, NULL, GetModuleHandle(NULL), NULL);
+    g_hLogWnd = CreateWindowExA(0, LOG_CLASS, "Execution Logs - CSCsecure",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 700, 450, hParent, NULL, GetModuleHandle(NULL), NULL);
 }
 
-// --- SYSTEM UTILITIES ---
 void RunSilentCmd(const char* cmd) {
     STARTUPINFOA si = { sizeof(si) };
     PROCESS_INFORMATION pi;
@@ -486,7 +719,6 @@ void RunSilentCmd(const char* cmd) {
     }
 }
 
-// --- PRINTER ENUMERATION & UNShares ---
 std::vector<PrinterStatus> GetSystemPrintersInfo() {
     std::vector<PrinterStatus> printerList;
     DWORD cbNeeded = 0, cReturned = 0;
@@ -533,7 +765,6 @@ void UnshareAllPrinters() {
     }
 }
 
-// --- NETWORK SHARED FOLDERS AUDIT & UNShares ---
 bool GetSystemSharedFoldersInfo(std::string& outShareNames) {
     PSHARE_INFO_1 pBuf = NULL, pTmpBuf = NULL;
     DWORD entriesRead = 0, totalEntries = 0, resumeHandle = 0;
@@ -561,7 +792,6 @@ bool GetSystemSharedFoldersInfo(std::string& outShareNames) {
             NetApiBufferFree(pBuf);
         }
     } while (res == ERROR_MORE_DATA);
-
     return foundUserShare;
 }
 
@@ -588,14 +818,12 @@ void UnshareAllFolders() {
     } while (res == ERROR_MORE_DATA);
 }
 
-// Hardware Bluetooth Detection
 bool IsBluetoothEnabled() {
     HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_BLUETOOTH, NULL, NULL, DIGCF_PRESENT);
     if (hDevInfo == INVALID_HANDLE_VALUE) return false;
 
     SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-    bool anyEnabled = false;
-    bool foundRadio = false;
+    bool anyEnabled = false, foundRadio = false;
 
     for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
         ULONG status = 0, problem = 0;
@@ -611,14 +839,12 @@ bool IsBluetoothEnabled() {
     return foundRadio ? anyEnabled : false;
 }
 
-// Physical Wi-Fi Adapter Detection
 bool IsWifiAdapterEnabled() {
     HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT);
     if (hDevInfo == INVALID_HANDLE_VALUE) return false;
 
     SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-    bool foundPhysicalWifi = false;
-    bool wifiEnabled = false;
+    bool foundPhysicalWifi = false, wifiEnabled = false;
 
     for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
         char friendlyName[256] = { 0 };
@@ -864,11 +1090,9 @@ void ConfigureSMB(bool harden) {
 }
 
 void ConfigureSslTlsIISCrypto(bool harden) {
-    // We now just pass a boolean to handle the internal extraction logic
     RunEmbeddedIISCrypto(harden);
 }
 
-// --- AUDIT ROUTINE ---
 void PerformAuditAndHighlight() {
     g_secureCount = 0;
     g_attentionCount = 0;
@@ -897,7 +1121,9 @@ void PerformAuditAndHighlight() {
     g_hardRows[2].liveInfo = smbHardened ? "SMBv1 protocol is securely disabled." : "SMBv1 protocol is currently enabled.";
     g_hardRows[2].statusLabel = smbHardened ? "Secured: Disabled" : "Warning: Enabled";
     g_hardStates[2] = smbHardened ? 2 : 1;
-    ShowWindow(g_hardRows[2].hBtnAction, smbHardened ? SW_HIDE : SW_SHOW);
+    g_hardRows[2].actionLabel = smbHardened ? "Enable" : "Secure";
+    SetWindowTextA(g_hardRows[2].hBtnAction, g_hardRows[2].actionLabel);
+    ShowWindow(g_hardRows[2].hBtnAction, SW_SHOW);
 
     // 4. Shared Printers
     g_printerList = GetSystemPrintersInfo();
@@ -918,6 +1144,8 @@ void PerformAuditAndHighlight() {
         }
         g_hardRows[3].statusLabel = "Warning: Shared";
         g_hardStates[3] = 1;
+        g_hardRows[3].actionLabel = "Secure";
+        SetWindowTextA(g_hardRows[3].hBtnAction, g_hardRows[3].actionLabel);
         ShowWindow(g_hardRows[3].hBtnAction, SW_SHOW);
     }
     else {
@@ -948,6 +1176,8 @@ void PerformAuditAndHighlight() {
         }
         g_hardRows[4].statusLabel = "Warning: Shared";
         g_hardStates[4] = 1;
+        g_hardRows[4].actionLabel = "Secure";
+        SetWindowTextA(g_hardRows[4].hBtnAction, g_hardRows[4].actionLabel);
         ShowWindow(g_hardRows[4].hBtnAction, SW_SHOW);
     }
     else {
@@ -962,21 +1192,27 @@ void PerformAuditAndHighlight() {
     g_hardRows[5].liveInfo = sslTlsHardened ? "Best practice IIS Crypto settings applied." : "Unsecured TLS/SSL ciphers are active.";
     g_hardRows[5].statusLabel = sslTlsHardened ? "Secured: Hardened" : "Warning: Unsecured";
     g_hardStates[5] = sslTlsHardened ? 2 : 1;
-    ShowWindow(g_hardRows[5].hBtnAction, sslTlsHardened ? SW_HIDE : SW_SHOW);
+    g_hardRows[5].actionLabel = sslTlsHardened ? "Revert" : "Secure";
+    SetWindowTextA(g_hardRows[5].hBtnAction, g_hardRows[5].actionLabel);
+    ShowWindow(g_hardRows[5].hBtnAction, SW_SHOW);
 
     // 7. Browser Login
     bool browserLocked = IsBrowserAccountLocked();
     g_hardRows[6].liveInfo = browserLocked ? "Browser sign-in is securely disabled." : "Browser sign-in is currently allowed.";
     g_hardRows[6].statusLabel = browserLocked ? "Secured: Locked" : "Warning: Unlocked";
     g_hardStates[6] = browserLocked ? 2 : 1;
-    ShowWindow(g_hardRows[6].hBtnAction, browserLocked ? SW_HIDE : SW_SHOW);
+    g_hardRows[6].actionLabel = browserLocked ? "Unlock" : "Lock";
+    SetWindowTextA(g_hardRows[6].hBtnAction, g_hardRows[6].actionLabel);
+    ShowWindow(g_hardRows[6].hBtnAction, SW_SHOW);
 
     // 8. Browser Passwords
     bool passwordLocked = IsBrowserPasswordLocked();
     g_hardRows[7].liveInfo = passwordLocked ? "Password saving is securely disabled." : "Password saving is currently allowed.";
     g_hardRows[7].statusLabel = passwordLocked ? "Secured: Locked" : "Warning: Unlocked";
     g_hardStates[7] = passwordLocked ? 2 : 1;
-    ShowWindow(g_hardRows[7].hBtnAction, passwordLocked ? SW_HIDE : SW_SHOW);
+    g_hardRows[7].actionLabel = passwordLocked ? "Unlock" : "Lock";
+    SetWindowTextA(g_hardRows[7].hBtnAction, g_hardRows[7].actionLabel);
+    ShowWindow(g_hardRows[7].hBtnAction, SW_SHOW);
 
     // 9. Local Users
     int userCount = 0;
@@ -988,22 +1224,27 @@ void PerformAuditAndHighlight() {
     if ((userCount > 0 && !allUsersDisabled) || !allPasswordsExpire) {
         g_hardRows[8].statusLabel = "Warning: Action Needed";
         g_hardStates[8] = 1;
+        g_hardRows[8].actionLabel = "Secure";
+        SetWindowTextA(g_hardRows[8].hBtnAction, g_hardRows[8].actionLabel);
         ShowWindow(g_hardRows[8].hBtnAction, SW_SHOW);
     }
     else {
         g_hardRows[8].statusLabel = "Secured: Hardened";
         g_hardStates[8] = 2;
-        ShowWindow(g_hardRows[8].hBtnAction, SW_HIDE);
+        g_hardRows[8].actionLabel = "Enable";
+        SetWindowTextA(g_hardRows[8].hBtnAction, g_hardRows[8].actionLabel);
+        ShowWindow(g_hardRows[8].hBtnAction, SW_SHOW);
     }
 
-    // 10. Network Security Policies (NTLMv2 & SMB Signing)
+    // 10. Network Security Policies 
     bool netSecHardened = IsNetworkSecPoliciesHardened();
     g_hardRows[9].liveInfo = netSecHardened ? "NTLMv2 & SMB Signing strictly enforced." : "Legacy NTLM or unsigned SMB allowed.";
     g_hardRows[9].statusLabel = netSecHardened ? "Secured: Hardened" : "Warning: Unsecured";
     g_hardStates[9] = netSecHardened ? 2 : 1;
-    ShowWindow(g_hardRows[9].hBtnAction, netSecHardened ? SW_HIDE : SW_SHOW);
+    g_hardRows[9].actionLabel = netSecHardened ? "Revert" : "Secure";
+    SetWindowTextA(g_hardRows[9].hBtnAction, g_hardRows[9].actionLabel);
+    ShowWindow(g_hardRows[9].hBtnAction, SW_SHOW);
 
-    // Metric Evaluations
     if (!btActive) g_secureCount++; else g_attentionCount++;
     if (!wifiActive) g_secureCount++; else g_attentionCount++;
     if (smbHardened) g_secureCount++; else g_insecureCount++;
@@ -1027,27 +1268,58 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         g_hBrushBg = CreateSolidBrush(COLOR_BG);
         g_hBrushPanel = CreateSolidBrush(COLOR_PANEL);
 
+        // --- NEW: Load the dynamically queried version numbers here ---
+        LoadVersionInfoFromResource();
+
         DWORD size = sizeof(g_computerName);
         GetComputerNameA(g_computerName, &size);
+
+        // Fetch Dynamic Windows Version
+        HKEY hKey;
+        char productName[128] = { 0 };
+        char displayVersion[64] = { 0 };
+        char currentBuild[64] = { 0 };
+        DWORD bufLen = sizeof(productName);
+
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            if (RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)productName, &bufLen) == ERROR_SUCCESS) {
+
+                bufLen = sizeof(currentBuild);
+                RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)currentBuild, &bufLen);
+
+                std::string prodStr(productName);
+                if (atoi(currentBuild) >= 22000) {
+                    size_t pos = prodStr.find("Windows 10");
+                    if (pos != std::string::npos) {
+                        prodStr.replace(pos, 10, "Windows 11");
+                    }
+                }
+
+                bufLen = sizeof(displayVersion);
+                if (RegQueryValueExA(hKey, "DisplayVersion", NULL, NULL, (LPBYTE)displayVersion, &bufLen) == ERROR_SUCCESS) {
+                    g_osVersion = prodStr + " " + std::string(displayVersion);
+                }
+                else {
+                    g_osVersion = prodStr;
+                }
+            }
+            RegCloseKey(hKey);
+        }
 
         g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
         g_hFontSub = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
         g_hFontBold = CreateFontA(13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
-        // Burger Menu Button
         CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 565, 15, 30, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_MENU, NULL, NULL);
-
-        // "Secure All" button
         CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 450, 78, 130, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
 
-        // Status bar bottom (Shifted downward for 10th row)
-        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, 639, 420, 20, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
+        // Adjusted Status Bar
+        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, 650, 420, 24, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
 
-        // Adjusting rows upward to remove dead space
         int startY = 125;
         int rowHeight = 44;
 
-        for (int i = 0; i < 10; i++) { // Increased loop max to 10
+        for (int i = 0; i < 10; i++) {
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
                 490, startY + 6, 90, 28,
@@ -1080,19 +1352,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SelectObject(hdc, g_hFontTitle);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
 
-        std::string dashTitle = "Dashboard - " + std::string(g_computerName);
+        std::string dashTitle = std::string(g_computerName) + " - " + g_osVersion;
         TextOutA(hdc, 25, 15, dashTitle.c_str(), (int)dashTitle.length());
 
         SelectObject(hdc, g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
         TextOutA(hdc, 25, 40, "System Hardening Compliance Utility", 35);
 
-        // Hardening Controls Container Panel
         HPEN hPenPanel = CreatePen(PS_SOLID, 1, COLOR_BORDER);
         SelectObject(hdc, g_hBrushPanel);
         SelectObject(hdc, hPenPanel);
 
-        // Panel Bottom stretched to 574 to fit 10th row
         RECT rcPanel1 = { 25, 68, 595, 574 };
         RoundRect(hdc, rcPanel1.left, rcPanel1.top, rcPanel1.right, rcPanel1.bottom, 8, 8);
 
@@ -1100,14 +1370,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SetTextColor(hdc, COLOR_TEXT_WHITE);
         TextOutA(hdc, 40, 82, "Hardening Controls", 18);
 
-        // Progress Bar Metric
         int percent = (g_totalControls > 0) ? (g_secureCount * 100) / g_totalControls : 0;
         COLORREF barColor;
         if (percent >= 80) barColor = COLOR_ACCENT_TEAL;
         else if (percent >= 50) barColor = COLOR_WARN_AMBER;
         else barColor = COLOR_DANGER_RED;
 
-        // Progress bar
         RECT rcProgBg = { 190, 87, 370, 91 };
         HBRUSH hTrackBrush = CreateSolidBrush(COLOR_BG);
         SelectObject(hdc, (HPEN)GetStockObject(NULL_PEN));
@@ -1125,18 +1393,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
         DeleteObject(hTrackBrush);
 
-        // Restore Percentage Indicator
         char pctStr[32];
         snprintf(pctStr, sizeof(pctStr), "%d%%", percent);
         SetTextColor(hdc, barColor);
         SelectObject(hdc, g_hFontBold);
         TextOutA(hdc, rcProgBg.right + 10, 82, pctStr, (int)strlen(pctStr));
 
-        // Render List Elements
         int rowY = 125;
         int rowHeight = 44;
 
-        for (int i = 0; i < 10; i++) { // Increased loop max to 10
+        for (int i = 0; i < 10; i++) {
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, COLOR_TEXT_WHITE);
             TextOutA(hdc, 40, rowY, g_hardRows[i].name, (int)strlen(g_hardRows[i].name));
@@ -1148,7 +1414,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             bool isSecure = (g_hardStates[i] == 2);
             SetTextColor(hdc, isSecure ? COLOR_ACCENT_TEAL : COLOR_DANGER_RED);
 
-            // Shifted Status Text
             RECT rcStatus = { 330, rowY + 6, 480, rowY + 32 };
             std::string statusText = g_hardRows[i].statusLabel;
             DrawTextA(hdc, statusText.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -1156,11 +1421,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             rowY += rowHeight;
         }
 
-        // Bottom Footer details (Shifted downward to 641)
         SelectObject(hdc, g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
-        TextOutA(hdc, 25, 641, "v4.2.0.0", 8);
-        TextOutA(hdc, 380, 641, "© 2026 Comtech Security Tool", 33);
+
+        // --- NEW: Using the dynamic global string for the footer version text ---
+        TextOutA(hdc, 455, 654, g_footerVersionStr.c_str(), (int)g_footerVersionStr.length());
 
         DeleteObject(hPenPanel);
 
@@ -1180,14 +1445,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HDC hdc = pdis->hDC;
         UINT id = pdis->CtlID;
 
-        // Custom Hamburger menu drawing
         if (id == ID_BTN_MENU) {
             HBRUSH hBg = CreateSolidBrush(COLOR_BG);
             FillRect(hdc, &pdis->rcItem, hBg);
             DeleteObject(hBg);
 
             HBRUSH hIconBrush = CreateSolidBrush(COLOR_TEXT_WHITE);
-            // Draw 3 distinct horizontal lines
             RECT r1 = { pdis->rcItem.left + 5, pdis->rcItem.top + 8, pdis->rcItem.right - 5, pdis->rcItem.top + 10 };
             RECT r2 = { pdis->rcItem.left + 5, pdis->rcItem.top + 14, pdis->rcItem.right - 5, pdis->rcItem.top + 16 };
             RECT r3 = { pdis->rcItem.left + 5, pdis->rcItem.top + 20, pdis->rcItem.right - 5, pdis->rcItem.top + 22 };
@@ -1225,6 +1488,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return TRUE;
         }
 
+        // Hardening Controls Button Styles
         if (id >= ID_HARD_BASE) {
             int rowIndex = (id - ID_HARD_BASE) / 10;
             bool isSecure = (g_hardStates[rowIndex] == 2);
@@ -1233,8 +1497,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             FillRect(hdc, &pdis->rcItem, hPanelBgBrush);
             DeleteObject(hPanelBgBrush);
 
-            HPEN hPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
-            HBRUSH hBtnBrush = CreateSolidBrush(COLOR_BG);
+            HPEN hPen;
+            HBRUSH hBtnBrush;
+            COLORREF textColor;
+
+            // Highlight button when warning; subtle outline when secured/enabled
+            if (isSecure) {
+                hBtnBrush = CreateSolidBrush(COLOR_BG);
+                hPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
+                textColor = COLOR_TEXT_MUTED;
+            }
+            else {
+                hBtnBrush = CreateSolidBrush(COLOR_ACCENT_TEAL);
+                hPen = CreatePen(PS_SOLID, 1, COLOR_ACCENT_TEAL);
+                textColor = RGB(0, 0, 0);
+            }
 
             SelectObject(hdc, hPen);
             SelectObject(hdc, hBtnBrush);
@@ -1244,9 +1521,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
 
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, isSecure ? COLOR_ACCENT_TEAL : COLOR_TEXT_WHITE);
+            SetTextColor(hdc, textColor);
 
-            SelectObject(hdc, g_hFontSub);
+            SelectObject(hdc, g_hFontBold);
             DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
             DeleteObject(hBtnBrush);
@@ -1260,27 +1537,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     {
         WORD id = LOWORD(wParam);
 
-        // Burger Menu Button Click Handling
+        // Burger Button now opens Popup Window instead of Dropdown Menu
         if (id == ID_BTN_MENU) {
-            HMENU hMenu = CreatePopupMenu();
-            AppendMenuA(hMenu, MF_STRING, IDM_SETTINGS, "Settings");
-            AppendMenuA(hMenu, MF_STRING, IDM_ABOUT, "About");
-            AppendMenuA(hMenu, MF_STRING, IDM_SEARCHPASS, "Search Pass");
-            AppendMenuA(hMenu, MF_STRING, IDM_WINUPDATE, "Open Windows Update");
-            AppendMenuA(hMenu, MF_STRING, IDM_INVENTORY, "Get Inventory");
-
-            HWND hBtn = GetDlgItem(hwnd, ID_BTN_MENU);
-            RECT rcBtn;
-            GetWindowRect(hBtn, &rcBtn);
-
-            TrackPopupMenu(hMenu, TPM_RIGHTALIGN | TPM_TOPALIGN, rcBtn.right, rcBtn.bottom, 0, hwnd, NULL);
-            DestroyMenu(hMenu);
+            ShowDarkMenuDialog(hwnd);
             return 0;
         }
 
-        // Burger Menu Dropdown Commands
-        if (id == IDM_SETTINGS) { MessageBoxA(hwnd, "Settings module not yet implemented.", "Info", MB_OK); return 0; }
-        if (id == IDM_ABOUT) { MessageBoxA(hwnd, "Comtech Security Tool v4.2.0\nSystem Hardening Utility", "About", MB_OK | MB_ICONINFORMATION); return 0; }
+        // --- NEW: Using the dynamic global string for the MessageBox body ---
+        if (id == IDM_ABOUT) {
+            std::string aboutMsg = g_appProductName + " v" + g_appVersion + "\n" + g_appDescription;
+            MessageBoxA(hwnd, aboutMsg.c_str(), "About", MB_OK | MB_ICONINFORMATION);
+            return 0;
+        }
+
         if (id == IDM_SEARCHPASS) { MessageBoxA(hwnd, "Search Pass module loaded.", "Action", MB_OK); return 0; }
         if (id == IDM_WINUPDATE) { RunSilentCmd("start ms-settings:windowsupdate"); return 0; }
         if (id == IDM_INVENTORY) { MessageBoxA(hwnd, "Executing inventory collection...", "Action", MB_OK); return 0; }
@@ -1292,34 +1561,54 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (g_isExecuting) return 0;
 
+        // Individual Control Row Button Handler (Supports both Secured & Unsecured states)
         if (id >= ID_HARD_BASE) {
             int rowIndex = (id - ID_HARD_BASE) / 10;
+            bool isSecured = (g_hardStates[rowIndex] == 2);
+
+            const char* confirmPrompt = isSecured ?
+                "Are you sure you want to change / restore this setting?" :
+                "Are you sure you want to secure this component?";
+
+            if (!ShowDarkConfirmDialog(hwnd, confirmPrompt)) {
+                return 0;
+            }
+
             g_isExecuting = true;
             SetCursor(LoadCursor(NULL, IDC_WAIT));
+            UpdateStatus("Processing security component...");
 
-            UpdateStatus("Applying Configuration...");
+            bool enableOrHarden = !isSecured;
+
             switch (rowIndex) {
-            case 0: SetBluetoothDeviceState(g_hardStates[0] == 2); break;
-            case 1: SetWifiDeviceState(g_hardStates[1] == 2); break;
-            case 2: ConfigureSMB(true); break;
+            case 0: SetBluetoothDeviceState(isSecured ? true : false); break;
+            case 1: SetWifiDeviceState(isSecured ? true : false); break;
+            case 2: ConfigureSMB(enableOrHarden); break;
             case 3: UnshareAllPrinters(); break;
             case 4: UnshareAllFolders(); break;
-            case 5: ConfigureSslTlsIISCrypto(true); break;
-            case 6: ConfigureBrowserAccountLock(true); break;
-            case 7: ConfigureBrowserPasswordLock(true); break;
-            case 8: ConfigureLocalUsers(true); break;
-            case 9: ConfigureNetworkSecPolicies(true); break; // Apply 10th Control
+            case 5: ConfigureSslTlsIISCrypto(enableOrHarden); break;
+            case 6: ConfigureBrowserAccountLock(enableOrHarden); break;
+            case 7: ConfigureBrowserPasswordLock(enableOrHarden); break;
+            case 8: ConfigureLocalUsers(enableOrHarden); break;
+            case 9: ConfigureNetworkSecPolicies(enableOrHarden); break;
             }
 
             PerformAuditAndHighlight();
+
             g_isExecuting = false;
             SetCursor(LoadCursor(NULL, IDC_ARROW));
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             UpdateStatus("Ready (Click to view logs)");
+
             return 0;
         }
 
         if (id == ID_BTN_SECURE_ALL) {
+
+            if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to secure ALL unresolved components automatically?")) {
+                return 0;
+            }
+
             g_isExecuting = true;
             SetCursor(LoadCursor(NULL, IDC_WAIT));
             UpdateStatus("Securing all unsecured components...");
@@ -1333,7 +1622,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             if (g_hardStates[6] == 1) ConfigureBrowserAccountLock(true);
             if (g_hardStates[7] == 1) ConfigureBrowserPasswordLock(true);
             if (g_hardStates[8] == 1) ConfigureLocalUsers(true);
-            if (g_hardStates[9] == 1) ConfigureNetworkSecPolicies(true); // Apply 10th Control on "Secure All"
+            if (g_hardStates[9] == 1) ConfigureNetworkSecPolicies(true);
 
             PerformAuditAndHighlight();
 
@@ -1341,8 +1630,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetCursor(LoadCursor(NULL, IDC_ARROW));
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             UpdateStatus("Ready (Click to view logs)");
-
-            MessageBoxA(hwnd, "All required system resources have been successfully secured and locked down.", "Success", MB_OK | MB_ICONINFORMATION);
         }
         break;
     }
@@ -1378,15 +1665,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
     RegisterClass(&wc);
 
-    // Adjusted window height up to 704 to fit the 10th row control
-    HWND hwnd = CreateWindowExA(0, CLASS_NAME, "Comtech Security Tool",
+    HWND hwnd = CreateWindowExA(0, CLASS_NAME, "CSCsecure",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 635, 704, NULL, NULL, hInstance, NULL);
+        CW_USEDEFAULT, CW_USEDEFAULT, 635, 715, NULL, NULL, hInstance, NULL);
 
-    // Set Windows 10/11 Dark Title Bar theme constraint
     BOOL useDarkMode = TRUE;
     ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
-    // Fallback for older Windows 10 builds
     ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &useDarkMode, sizeof(useDarkMode));
 
     ShowWindow(hwnd, nCmdShow);

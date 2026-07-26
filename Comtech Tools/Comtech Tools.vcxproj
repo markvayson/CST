@@ -24,6 +24,7 @@
     <ProjectGuid>{230a0143-8e54-4044-a5ab-4a5779fa7337}</ProjectGuid>
     <RootNamespace>ComtechTools</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>CSCsecure</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -155,16 +156,16 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="Comtech Tools.h" />
+    <ClInclude Include="CSCsecure.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Comtech Tools.cpp" />
+    <ClCompile Include="CSCsecure.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="Comtech Tools.rc" />
+    <ResourceCompile Include="CSCsecure.rc" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="D:\IT\Comtech Logo.ico" />

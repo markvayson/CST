@@ -24,17 +24,17 @@
     <ClInclude Include="Resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Comtech Tools.h">
+    <ClInclude Include="CSCsecure.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Comtech Tools.cpp">
+    <ClCompile Include="CSCsecure.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="Comtech Tools.rc">
+    <ResourceCompile Include="CSCsecure.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
   </ItemGroup>
