@@ -4,6 +4,7 @@
 #include <commctrl.h>
 #include <setupapi.h>
 #include <devguid.h>
+#include <userenv.h>
 #include <cfgmgr32.h>
 #include <winspool.h>
 #include <lm.h>
@@ -28,6 +29,7 @@
 #pragma comment(lib, "netapi32.lib")
 #pragma comment(lib, "dwmapi.lib") 
 #pragma comment(lib, "version.lib")
+#pragma comment(lib, "userenv.lib")
 
 // Retrieves a StringFileInfo entry from VS_VERSION_INFO in resources
 std::string GetFileVersionValue(const char* valueName) {
@@ -188,6 +190,8 @@ std::vector<PrinterStatus> g_printerList;
 // Function Declarations
 void LogMessage(const std::string& msg);
 void UpdateStatus(const std::string& msg);
+bool RestartWin32Service(const char* serviceName);
+void UnshareAllPrinters();
 
 // --- DYNAMIC VERSION LOADER ---
 void LoadVersionInfoFromResource() {
@@ -724,11 +728,12 @@ std::vector<PrinterStatus> GetSystemPrintersInfo() {
     std::vector<PrinterStatus> printerList;
     DWORD cbNeeded = 0, cReturned = 0;
 
-    EnumPrintersA(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, NULL, 2, NULL, 0, &cbNeeded, &cReturned);
+    // Enumerate ONLY local printers to prevent network RPC timeouts
+    EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, NULL, 0, &cbNeeded, &cReturned);
     if (cbNeeded == 0) return printerList;
 
     std::vector<BYTE> buffer(cbNeeded);
-    if (EnumPrintersA(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, NULL, 2, buffer.data(), cbNeeded, &cbNeeded, &cReturned)) {
+    if (EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, buffer.data(), cbNeeded, &cbNeeded, &cReturned)) {
         PRINTER_INFO_2A* pPrinterInfo = reinterpret_cast<PRINTER_INFO_2A*>(buffer.data());
 
         for (DWORD i = 0; i < cReturned; i++) {
@@ -740,6 +745,61 @@ std::vector<PrinterStatus> GetSystemPrintersInfo() {
         }
     }
     return printerList;
+}
+
+
+
+void SetSpoolerClientConnectionsPolicy(bool disableConnections) {
+    HKEY hKey;
+    LPCWSTR subKey = L"Software\\Policies\\Microsoft\\Windows NT\\Printers";
+
+    // 1. Open or create the policy key natively
+    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+
+    if (status == ERROR_SUCCESS) {
+        if (disableConnections) {
+            DWORD value = 2;
+            RegSetValueExW(hKey, L"RegisterSpoolerRemoteRpcEndPoint", 0, REG_DWORD, (const BYTE*)&value, sizeof(value));
+            LogMessage("Policy 'Allow Print Spooler to accept client connections' set to Disabled.");
+        }
+        else {
+            RegDeleteValueW(hKey, L"RegisterSpoolerRemoteRpcEndPoint");
+            LogMessage("Policy 'Allow Print Spooler to accept client connections' reverted to Not Configured.");
+        }
+        RegCloseKey(hKey);
+    }
+    else {
+        LogMessage("Failed to open or create registry key for Printer policies. Run as Administrator.");
+        return;
+    }
+
+    // 2. Force Group Policy Update Natively
+    LogMessage("Refreshing machine policy natively...");
+    RefreshPolicyEx(TRUE, RP_FORCE);
+
+    // 3. Restart the Print Spooler service natively
+    LogMessage("Restarting Print Spooler service natively...");
+    if (RestartWin32Service("Spooler")) {
+        LogMessage("Spooler client connection policy applied successfully.");
+    }
+    else {
+        LogMessage("Failed to restart Spooler service natively.");
+    }
+}
+
+void OnLockdownPrintersButtonClicked() {
+    // 1. Clear out any currently shared printers
+    // This function will safely return early if 0 shared printers are found.
+    UnshareAllPrinters();
+
+    // 2. Lock down the spooler (Executes no matter what)
+    SetSpoolerClientConnectionsPolicy(true);
+}
+
+
+void OnRevertPrintersButtonClicked() {
+    // Revert the policy to "Not Configured" and restart the spooler
+    SetSpoolerClientConnectionsPolicy(false);
 }
 
 void UnshareAllPrinters() {
@@ -754,12 +814,29 @@ void UnshareAllPrinters() {
         for (DWORD i = 0; i < cReturned; i++) {
             if (pPrinterInfo[i].Attributes & PRINTER_ATTRIBUTE_SHARED) {
                 HANDLE hPrinter = NULL;
-                PRINTER_DEFAULTSA pd = { NULL, NULL, PRINTER_ALL_ACCESS };
+                // Request PRINTER_ACCESS_ADMINISTER instead of PRINTER_ALL_ACCESS
+                PRINTER_DEFAULTSA pd = { NULL, NULL, PRINTER_ACCESS_ADMINISTER };
 
                 if (OpenPrinterA(pPrinterInfo[i].pPrinterName, &hPrinter, &pd)) {
+                    // Update attributes flag
                     pPrinterInfo[i].Attributes &= ~PRINTER_ATTRIBUTE_SHARED;
-                    SetPrinterA(hPrinter, 2, (LPBYTE)&pPrinterInfo[i], 0);
+
+                    // Clear sensitive driver pointers to avoid SetPrinter Validation failure
+                    pPrinterInfo[i].pDevMode = NULL;
+                    pPrinterInfo[i].pSecurityDescriptor = NULL;
+
+                    if (!SetPrinterA(hPrinter, 2, (LPBYTE)&pPrinterInfo[i], 0)) {
+                        DWORD err = GetLastError();
+                        LogMessage("Failed to unshare printer: " + std::string(pPrinterInfo[i].pPrinterName) + " Error code: " + std::to_string(err));
+                    }
+                    else {
+                        LogMessage("Successfully unshared printer: " + std::string(pPrinterInfo[i].pPrinterName));
+                    }
                     ClosePrinter(hPrinter);
+                }
+                else {
+                    DWORD err = GetLastError();
+                    LogMessage("Failed to open printer: " + std::string(pPrinterInfo[i].pPrinterName) + " Error code: " + std::to_string(err));
                 }
             }
         }
@@ -809,7 +886,18 @@ void UnshareAllFolders() {
                 if ((pTmpBuf->shi1_type & STYPE_MASK) == STYPE_DISKTREE) {
                     std::wstring wShareName = pTmpBuf->shi1_netname;
                     if (!wShareName.empty() && wShareName.back() != L'$') {
-                        NetShareDel(NULL, (LMSTR)wShareName.c_str(), 0);
+                        DWORD delRes = NetShareDel(NULL, (LMSTR)wShareName.c_str(), 0);
+
+                        // Convert wide string to standard string for logging
+                        char nameA[256] = { 0 };
+                        WideCharToMultiByte(CP_ACP, 0, wShareName.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
+
+                        if (delRes == NERR_Success) {
+                            LogMessage("Successfully unshared folder: " + std::string(nameA));
+                        }
+                        else {
+                            LogMessage("Failed to unshare folder: " + std::string(nameA) + " Error code: " + std::to_string(delRes));
+                        }
                     }
                 }
                 pTmpBuf++;
@@ -867,6 +955,23 @@ bool IsWifiAdapterEnabled() {
     SetupDiDestroyDeviceInfoList(hDevInfo);
     return foundPhysicalWifi ? wifiEnabled : false;
 }
+
+bool IsSpoolerClientConnectionsDisabled() {
+    HKEY hKey;
+    DWORD value = 0;
+    DWORD dwSize = sizeof(DWORD);
+    LPCWSTR subKey = L"Software\\Policies\\Microsoft\\Windows NT\\Printers";
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(hKey, L"RegisterSpoolerRemoteRpcEndPoint", NULL, NULL, (LPBYTE)&value, &dwSize) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            return (value == 2); // 2 means disabled/blocked
+        }
+        RegCloseKey(hKey);
+    }
+    return false; // Default or unconfigured allows connections
+}
+
 
 bool IsSMBv1Disabled() {
     HKEY hKey;
@@ -1155,7 +1260,7 @@ void PerformAuditAndHighlight() {
     SetWindowTextA(g_hardRows[2].hBtnAction, g_hardRows[2].actionLabel);
     ShowWindow(g_hardRows[2].hBtnAction, SW_SHOW);
 
-    // 4. Shared Printers
+    // 4. Shared Network Printers & Spooler Policy Audit
     g_printerList = GetSystemPrintersInfo();
     std::vector<std::string> sharedPrinters;
     for (const auto& printer : g_printerList) {
@@ -1164,25 +1269,35 @@ void PerformAuditAndHighlight() {
             sharedPrinters.push_back(sName);
         }
     }
+
     bool hasSharedPrinters = !sharedPrinters.empty();
-    if (hasSharedPrinters) {
-        if (sharedPrinters.size() == 1) g_hardRows[3].liveInfo = "Printer shared: " + sharedPrinters[0];
-        else {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "Shared printer: %s, and (%d) more.", sharedPrinters[0].c_str(), (int)(sharedPrinters.size() - 1));
-            g_hardRows[3].liveInfo = buf;
+    bool spoolerPolicySecure = IsSpoolerClientConnectionsDisabled();
+
+    if (hasSharedPrinters || !spoolerPolicySecure) {
+        if (hasSharedPrinters) {
+            if (sharedPrinters.size() == 1) g_hardRows[3].liveInfo = "Printer shared: " + sharedPrinters[0];
+            else {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "Shared printer: %s, and (%d) more.", sharedPrinters[0].c_str(), (int)(sharedPrinters.size() - 1));
+                g_hardRows[3].liveInfo = buf;
+            }
         }
-        g_hardRows[3].statusLabel = "Warning: Shared";
+        else {
+            g_hardRows[3].liveInfo = "Spooler remote RPC connections are allowed.";
+        }
+        g_hardRows[3].statusLabel = "Warning: Unsecured";
         g_hardStates[3] = 1;
         g_hardRows[3].actionLabel = "Secure";
         SetWindowTextA(g_hardRows[3].hBtnAction, g_hardRows[3].actionLabel);
         ShowWindow(g_hardRows[3].hBtnAction, SW_SHOW);
     }
     else {
-        g_hardRows[3].liveInfo = "No shared network printers detected.";
-        g_hardRows[3].statusLabel = "Secured: No Shares";
+        g_hardRows[3].liveInfo = "No shares & RPC client connections blocked.";
+        g_hardRows[3].statusLabel = "Secured: Hardened";
         g_hardStates[3] = 2;
-        ShowWindow(g_hardRows[3].hBtnAction, SW_HIDE);
+        g_hardRows[3].actionLabel = "Revert";
+        SetWindowTextA(g_hardRows[3].hBtnAction, g_hardRows[3].actionLabel);
+        ShowWindow(g_hardRows[3].hBtnAction, SW_SHOW);
     }
 
     // 5. Shared Folders
@@ -1617,7 +1732,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             case 0: SetBluetoothDeviceState(isSecured ? true : false); break;
             case 1: SetWifiDeviceState(isSecured ? true : false); break;
             case 2: ConfigureSMB(enableOrHarden); break;
-            case 3: UnshareAllPrinters(); break;
+            case 3:
+                if (enableOrHarden) {
+                    OnLockdownPrintersButtonClicked();
+                }
+                else {
+                    OnRevertPrintersButtonClicked();
+                }
+                break;
             case 4: UnshareAllFolders(); break;
             case 5: ConfigureSslTlsIISCrypto(enableOrHarden); break;
             case 6: ConfigureBrowserAccountLock(enableOrHarden); break;
