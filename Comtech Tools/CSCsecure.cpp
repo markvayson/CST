@@ -878,14 +878,43 @@ bool IsSMBv1Disabled() {
     return (smb1 == 0);
 }
 
-bool IsSslTlsHardened() {
+// Helper function to check if a specific SCHANNEL key is explicitly disabled
+bool CheckSchannelKeyDisabled(const char* subKey) {
     HKEY hKey;
-    DWORD tls10Enabled = 1, dwSize = sizeof(DWORD);
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\Protocols\\TLS 1.0\\Server", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "Enabled", NULL, NULL, (LPBYTE)&tls10Enabled, &dwSize);
+    DWORD enabled = 1; // Default to enabled/OS default if the key doesn't exist
+    DWORD dwSize = sizeof(DWORD);
+    char fullPath[512];
+
+    snprintf(fullPath, sizeof(fullPath), "SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\%s", subKey);
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, fullPath, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        // IIS Crypto sets 'Enabled' to 0 when disabling a component
+        if (RegQueryValueExA(hKey, "Enabled", NULL, NULL, (LPBYTE)&enabled, &dwSize) != ERROR_SUCCESS) {
+            enabled = 1; // If the value is missing, it's not explicitly disabled
+        }
         RegCloseKey(hKey);
     }
-    return (tls10Enabled == 0);
+    return (enabled == 0);
+}
+
+// Upgraded TLS Hardening Check
+bool IsSslTlsHardened() {
+    // 1. Check if legacy protocols are explicitly disabled
+    bool noTls10 = CheckSchannelKeyDisabled("Protocols\\TLS 1.0\\Server");
+    bool noTls11 = CheckSchannelKeyDisabled("Protocols\\TLS 1.1\\Server");
+    bool noSsl30 = CheckSchannelKeyDisabled("Protocols\\SSL 3.0\\Server");
+
+    // 2. Check if weak ciphers are explicitly disabled (Key indicators of a template)
+    bool noRc4 = CheckSchannelKeyDisabled("Ciphers\\RC4 128/128");
+    bool noNull = CheckSchannelKeyDisabled("Ciphers\\NULL");
+    bool noDes = CheckSchannelKeyDisabled("Ciphers\\DES 56/56");
+
+    // 3. Check if weak hashes are explicitly disabled
+    bool noMd5 = CheckSchannelKeyDisabled("Hashes\\MD5");
+
+    // The system is only considered hardened if ALL these weak components are explicitly turned off.
+    // If someone only manually tweaked the protocols, the ciphers/hashes will fail this check.
+    return (noTls10 && noTls11 && noSsl30 && noRc4 && noNull && noDes && noMd5);
 }
 
 bool IsBrowserAccountLocked() {
