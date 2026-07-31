@@ -56,6 +56,7 @@ static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     }
     return 0;
 }
+
 static bool AskUserDepartmentAndOwner(HWND hParent, std::string& outDept, std::string& outOwner) {
     g_inputDept = "";
     g_inputOwner = "";

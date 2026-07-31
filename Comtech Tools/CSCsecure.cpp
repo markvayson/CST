@@ -20,6 +20,7 @@
 #include <d2d1.h>
 #include <dwmapi.h> 
 #include "Inventory.h"
+#include "version.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -43,7 +44,6 @@ std::string GetFileVersionValue(const char* valueName) {
     std::vector<BYTE> data(dwSize);
     if (!GetFileVersionInfoA(szPath, 0, dwSize, data.data())) return "";
 
-    // Query translation table block dynamically
     struct LANGANDCODEPAGE {
         WORD wLanguage;
         WORD wCodePage;
@@ -56,7 +56,6 @@ std::string GetFileVersionValue(const char* valueName) {
             pTranslate[0].wLanguage, pTranslate[0].wCodePage, valueName);
     }
     else {
-        // Fallback to English/Unicode (040904b0) as defined in cscsecure.rc
         snprintf(subBlock, sizeof(subBlock), "\\StringFileInfo\\040904b0\\%s", valueName);
     }
 
@@ -69,7 +68,6 @@ std::string GetFileVersionValue(const char* valueName) {
     return "";
 }
 
-// Dark Mode Title Bar Attributes
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
@@ -131,6 +129,7 @@ HBRUSH g_hBrushPanel = NULL;
 HFONT  g_hFontTitle = NULL;
 HFONT  g_hFontSub = NULL;
 HFONT  g_hFontBold = NULL;
+HFONT  g_hFontIcon = NULL; // Segoe MDL2 Assets Font
 HWND   g_hMainWnd = NULL;
 HWND   g_hLogWnd = NULL;
 HWND   g_hLogEdit = NULL;
@@ -163,20 +162,22 @@ struct HardeningRow {
     std::string liveInfo;
     std::string statusLabel;
     const char* actionLabel;
+    wchar_t iconGlyph;
     HWND hBtnAction;
 };
 
+// Row Definitions with Segoe MDL2 Icon Codes
 HardeningRow g_hardRows[10] = {
-    {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", NULL},
-    {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", NULL},
-    {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", NULL},
-    {"Shared Network Printers", "Auditing...", "Auditing...", "Secure", NULL},
-    {"Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", NULL},
-    {"SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", NULL},
-    {"Browser Account Login", "Auditing...", "Auditing...", "Lock", NULL},
-    {"Browser Password Lock", "Auditing...", "Auditing...", "Lock", NULL},
-    {"Local User Accounts", "Auditing...", "Auditing...", "Secure", NULL},
-    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", NULL}
+    {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL},
+    {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL},
+    {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL},
+    {"Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL},
+    {"Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", L'\xE8B7', NULL},
+    {"SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", L'\xE72E', NULL},
+    {"Browser Account Login", "Auditing...", "Auditing...", "Lock", L'\xE77B', NULL},
+    {"Browser Password Lock", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL},
+    {"Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL},
+    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL}
 };
 
 struct PrinterStatus {
@@ -187,13 +188,11 @@ struct PrinterStatus {
 
 std::vector<PrinterStatus> g_printerList;
 
-// Function Declarations
 void LogMessage(const std::string& msg);
 void UpdateStatus(const std::string& msg);
 bool RestartWin32Service(const char* serviceName);
 void UnshareAllPrinters();
 
-// --- DYNAMIC VERSION LOADER ---
 void LoadVersionInfoFromResource() {
     std::string name = GetFileVersionValue("ProductName");
     std::string ver = GetFileVersionValue("ProductVersion");
@@ -208,7 +207,6 @@ void LoadVersionInfoFromResource() {
     }
 }
 
-// --- CUSTOM NATIVE CONFIRMATION DIALOG ---
 bool g_confirmResult = false;
 std::string g_confirmMsg = "";
 
@@ -307,119 +305,6 @@ bool ShowDarkConfirmDialog(HWND hParent, const char* msg) {
     return g_confirmResult;
 }
 
-// --- CUSTOM NATIVE BURGER MENU POPUP DIALOG ---
-LRESULT CALLBACK MenuPopupWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-    case WM_CREATE: {
-        int y = 50;
-        int btnWidth = 240;
-        int btnHeight = 34;
-        int spacing = 10;
-
-        CreateWindowA("BUTTON", "About", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_ABOUT, NULL, NULL);
-        y += btnHeight + spacing;
-        CreateWindowA("BUTTON", "Search Pass", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_SEARCHPASS, NULL, NULL);
-        y += btnHeight + spacing;
-        CreateWindowA("BUTTON", "Open Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_WINUPDATE, NULL, NULL);
-        y += btnHeight + spacing;
-        CreateWindowA("BUTTON", "Get Inventory", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDM_INVENTORY, NULL, NULL);
-        y += btnHeight + spacing + 5;
-        CreateWindowA("BUTTON", "Close", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, y, btnWidth, btnHeight, hwnd, (HMENU)IDCANCEL, NULL, NULL);
-        break;
-    }
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-
-        FillRect(hdc, &rc, g_hBrushBg);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COLOR_TEXT_WHITE);
-        SelectObject(hdc, g_hFontTitle);
-
-        RECT titleRc = { 0, 12, rc.right, 42 };
-        DrawTextA(hdc, "Menu Options", -1, &titleRc, DT_CENTER | DT_SINGLELINE);
-
-        EndPaint(hwnd, &ps);
-        break;
-    }
-    case WM_DRAWITEM: {
-        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
-        HDC hdc = pdis->hDC;
-        UINT id = pdis->CtlID;
-
-        bool isClose = (id == IDCANCEL);
-        HBRUSH hBtnBrush = CreateSolidBrush(isClose ? COLOR_PANEL : COLOR_CARD_BG);
-        FillRect(hdc, &pdis->rcItem, hBtnBrush);
-        DeleteObject(hBtnBrush);
-
-        HPEN hPen = CreatePen(PS_SOLID, 1, isClose ? COLOR_BORDER : COLOR_ACCENT_TEAL);
-        SelectObject(hdc, hPen);
-        SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
-        DeleteObject(hPen);
-
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, isClose ? COLOR_TEXT_MUTED : COLOR_TEXT_WHITE);
-        SelectObject(hdc, g_hFontBold);
-
-        char btnText[64] = { 0 };
-        GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-        DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        return TRUE;
-    }
-    case WM_COMMAND: {
-        WORD id = LOWORD(wParam);
-        HWND hParent = GetParent(hwnd);
-        PostMessage(hwnd, WM_CLOSE, 0, 0);
-        if (id != IDCANCEL && hParent) {
-            PostMessage(hParent, WM_COMMAND, wParam, lParam);
-        }
-        break;
-    }
-    case WM_CLOSE: {
-        EnableWindow(GetParent(hwnd), TRUE);
-        SetForegroundWindow(GetParent(hwnd));
-        DestroyWindow(hwnd);
-        break;
-    }
-    }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
-void ShowDarkMenuDialog(HWND hParent) {
-    WNDCLASS wc = { 0 };
-    wc.lpfnWndProc = MenuPopupWndProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "DarkMenuPopupDialog";
-    wc.hbrBackground = g_hBrushBg;
-    RegisterClass(&wc);
-
-    HWND hPopup = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
-        "DarkMenuPopupDialog", "CSCsecure Menu",
-        WS_POPUP | WS_BORDER | WS_CAPTION,
-        0, 0, 305, 360, hParent, NULL, GetModuleHandle(NULL), NULL);
-
-    RECT rcParent; GetWindowRect(hParent, &rcParent);
-    SetWindowPos(hPopup, NULL,
-        rcParent.left + (rcParent.right - rcParent.left) / 2 - 152,
-        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 180,
-        305, 360, SWP_NOZORDER);
-
-    BOOL useDarkMode = TRUE;
-    ::DwmSetWindowAttribute(hPopup, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
-
-    EnableWindow(hParent, FALSE);
-    ShowWindow(hPopup, SW_SHOW);
-
-    MSG wmsg;
-    while (IsWindow(hPopup) && GetMessage(&wmsg, NULL, 0, 0)) {
-        TranslateMessage(&wmsg);
-        DispatchMessage(&wmsg);
-    }
-}
-
-// --- NETWORK SECURITY POLICIES AUDIT & HARDENING ---
 bool IsNetworkSecPoliciesHardened() {
     HKEY hKey;
     DWORD dwSize = sizeof(DWORD);
@@ -479,7 +364,6 @@ void ConfigureNetworkSecPolicies(bool harden) {
     }
 }
 
-// --- LOCAL USERS AUDIT & HARDENING ---
 std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bool& outAllPasswordsExpire) {
     DWORD dwRead = 0, dwTotal = 0, dwResume = 0;
     PUSER_INFO_1 pBuf = NULL;
@@ -728,7 +612,6 @@ std::vector<PrinterStatus> GetSystemPrintersInfo() {
     std::vector<PrinterStatus> printerList;
     DWORD cbNeeded = 0, cReturned = 0;
 
-    // Enumerate ONLY local printers to prevent network RPC timeouts
     EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, NULL, 0, &cbNeeded, &cReturned);
     if (cbNeeded == 0) return printerList;
 
@@ -747,13 +630,10 @@ std::vector<PrinterStatus> GetSystemPrintersInfo() {
     return printerList;
 }
 
-
-
 void SetSpoolerClientConnectionsPolicy(bool disableConnections) {
     HKEY hKey;
     LPCWSTR subKey = L"Software\\Policies\\Microsoft\\Windows NT\\Printers";
 
-    // 1. Open or create the policy key natively
     LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
 
     if (status == ERROR_SUCCESS) {
@@ -773,11 +653,9 @@ void SetSpoolerClientConnectionsPolicy(bool disableConnections) {
         return;
     }
 
-    // 2. Force Group Policy Update Natively
     LogMessage("Refreshing machine policy natively...");
     RefreshPolicyEx(TRUE, RP_FORCE);
 
-    // 3. Restart the Print Spooler service natively
     LogMessage("Restarting Print Spooler service natively...");
     if (RestartWin32Service("Spooler")) {
         LogMessage("Spooler client connection policy applied successfully.");
@@ -788,17 +666,11 @@ void SetSpoolerClientConnectionsPolicy(bool disableConnections) {
 }
 
 void OnLockdownPrintersButtonClicked() {
-    // 1. Clear out any currently shared printers
-    // This function will safely return early if 0 shared printers are found.
     UnshareAllPrinters();
-
-    // 2. Lock down the spooler (Executes no matter what)
     SetSpoolerClientConnectionsPolicy(true);
 }
 
-
 void OnRevertPrintersButtonClicked() {
-    // Revert the policy to "Not Configured" and restart the spooler
     SetSpoolerClientConnectionsPolicy(false);
 }
 
@@ -814,14 +686,10 @@ void UnshareAllPrinters() {
         for (DWORD i = 0; i < cReturned; i++) {
             if (pPrinterInfo[i].Attributes & PRINTER_ATTRIBUTE_SHARED) {
                 HANDLE hPrinter = NULL;
-                // Request PRINTER_ACCESS_ADMINISTER instead of PRINTER_ALL_ACCESS
                 PRINTER_DEFAULTSA pd = { NULL, NULL, PRINTER_ACCESS_ADMINISTER };
 
                 if (OpenPrinterA(pPrinterInfo[i].pPrinterName, &hPrinter, &pd)) {
-                    // Update attributes flag
                     pPrinterInfo[i].Attributes &= ~PRINTER_ATTRIBUTE_SHARED;
-
-                    // Clear sensitive driver pointers to avoid SetPrinter Validation failure
                     pPrinterInfo[i].pDevMode = NULL;
                     pPrinterInfo[i].pSecurityDescriptor = NULL;
 
@@ -888,7 +756,6 @@ void UnshareAllFolders() {
                     if (!wShareName.empty() && wShareName.back() != L'$') {
                         DWORD delRes = NetShareDel(NULL, (LMSTR)wShareName.c_str(), 0);
 
-                        // Convert wide string to standard string for logging
                         char nameA[256] = { 0 };
                         WideCharToMultiByte(CP_ACP, 0, wShareName.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
 
@@ -965,13 +832,12 @@ bool IsSpoolerClientConnectionsDisabled() {
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         if (RegQueryValueExW(hKey, L"RegisterSpoolerRemoteRpcEndPoint", NULL, NULL, (LPBYTE)&value, &dwSize) == ERROR_SUCCESS) {
             RegCloseKey(hKey);
-            return (value == 2); // 2 means disabled/blocked
+            return (value == 2);
         }
         RegCloseKey(hKey);
     }
-    return false; // Default or unconfigured allows connections
+    return false;
 }
-
 
 bool IsSMBv1Disabled() {
     HKEY hKey;
@@ -983,42 +849,34 @@ bool IsSMBv1Disabled() {
     return (smb1 == 0);
 }
 
-// Helper function to check if a specific SCHANNEL key is explicitly disabled
 bool CheckSchannelKeyDisabled(const char* subKey) {
     HKEY hKey;
-    DWORD enabled = 1; // Default to enabled/OS default if the key doesn't exist
+    DWORD enabled = 1;
     DWORD dwSize = sizeof(DWORD);
     char fullPath[512];
 
     snprintf(fullPath, sizeof(fullPath), "SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\%s", subKey);
 
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, fullPath, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        // IIS Crypto sets 'Enabled' to 0 when disabling a component
         if (RegQueryValueExA(hKey, "Enabled", NULL, NULL, (LPBYTE)&enabled, &dwSize) != ERROR_SUCCESS) {
-            enabled = 1; // If the value is missing, it's not explicitly disabled
+            enabled = 1;
         }
         RegCloseKey(hKey);
     }
     return (enabled == 0);
 }
 
-// Upgraded TLS Hardening Check
 bool IsSslTlsHardened() {
-    // 1. Check if legacy protocols are explicitly disabled
     bool noTls10 = CheckSchannelKeyDisabled("Protocols\\TLS 1.0\\Server");
     bool noTls11 = CheckSchannelKeyDisabled("Protocols\\TLS 1.1\\Server");
     bool noSsl30 = CheckSchannelKeyDisabled("Protocols\\SSL 3.0\\Server");
 
-    // 2. Check if weak ciphers are explicitly disabled (Key indicators of a template)
     bool noRc4 = CheckSchannelKeyDisabled("Ciphers\\RC4 128/128");
     bool noNull = CheckSchannelKeyDisabled("Ciphers\\NULL");
     bool noDes = CheckSchannelKeyDisabled("Ciphers\\DES 56/56");
 
-    // 3. Check if weak hashes are explicitly disabled
     bool noMd5 = CheckSchannelKeyDisabled("Hashes\\MD5");
 
-    // The system is only considered hardened if ALL these weak components are explicitly turned off.
-    // If someone only manually tweaked the protocols, the ciphers/hashes will fail this check.
     return (noTls10 && noTls11 && noSsl30 && noRc4 && noNull && noDes && noMd5);
 }
 
@@ -1260,7 +1118,7 @@ void PerformAuditAndHighlight() {
     SetWindowTextA(g_hardRows[2].hBtnAction, g_hardRows[2].actionLabel);
     ShowWindow(g_hardRows[2].hBtnAction, SW_SHOW);
 
-    // 4. Shared Network Printers & Spooler Policy Audit
+    // 4. Shared Network Printers
     g_printerList = GetSystemPrintersInfo();
     std::vector<std::string> sharedPrinters;
     for (const auto& printer : g_printerList) {
@@ -1413,13 +1271,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         g_hBrushBg = CreateSolidBrush(COLOR_BG);
         g_hBrushPanel = CreateSolidBrush(COLOR_PANEL);
 
-        // --- NEW: Load the dynamically queried version numbers here ---
         LoadVersionInfoFromResource();
 
         DWORD size = sizeof(g_computerName);
         GetComputerNameA(g_computerName, &size);
 
-        // Fetch Dynamic Windows Version
         HKEY hKey;
         char productName[128] = { 0 };
         char displayVersion[64] = { 0 };
@@ -1428,7 +1284,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
             if (RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)productName, &bufLen) == ERROR_SUCCESS) {
-
                 bufLen = sizeof(currentBuild);
                 RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)currentBuild, &bufLen);
 
@@ -1451,23 +1306,46 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             RegCloseKey(hKey);
         }
 
-        g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        g_hFontSub = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        g_hFontBold = CreateFontA(13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        g_hFontSub = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        g_hFontBold = CreateFontA(13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
-        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 565, 15, 30, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_MENU, NULL, NULL);
-        CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 450, 78, 130, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
+        // Segoe MDL2 Assets Font Handle for Vector Glyphs
+        g_hFontIcon = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe MDL2 Assets");
 
-        // Adjusted Status Bar
-        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, 650, 420, 24, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
+        // REFACTORED DIMENSIONS & POSITIONS
+        // Main Panel: Left 20, Width 500 (Right: 520)
+        // Action Buttons: X 440 (Inside Main Panel)
+        // Sidebar: Starts at X 535, Width 215
+        int sidebarX = 530;
+        int btnWidth = 165;
+        int btnHeight = 48;
+        int sidebarStartY = 68;
+        int spacing = 12;
 
-        int startY = 125;
-        int rowHeight = 44;
+        CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+            sidebarX, sidebarStartY, btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
+
+        CreateWindowA("BUTTON", "Collect Inventories", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+            sidebarX, sidebarStartY + (btnHeight + spacing), btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)IDM_INVENTORY, NULL, NULL);
+
+        CreateWindowA("BUTTON", "Search Pass", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+            sidebarX, sidebarStartY + (btnHeight + spacing) * 2, btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)IDM_SEARCHPASS, NULL, NULL);
+
+        CreateWindowA("BUTTON", "Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+            sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)IDM_WINUPDATE, NULL, NULL);
+
+        // Compact Status Bar at Y=575
+        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 20, 575, 430, 24, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
+
+        // Compact Rows (Height: 38px)
+        int startY = 122;
+        int rowHeight = 38;
 
         for (int i = 0; i < 10; i++) {
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-                490, startY + 6, 90, 28,
+                440, startY + 4, 70, 26,
                 hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
             startY += rowHeight;
         }
@@ -1498,22 +1376,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SetTextColor(hdc, COLOR_TEXT_WHITE);
 
         std::string dashTitle = std::string(g_computerName) + " - " + g_osVersion;
-        TextOutA(hdc, 25, 15, dashTitle.c_str(), (int)dashTitle.length());
+        TextOutA(hdc, 20, 15, dashTitle.c_str(), (int)dashTitle.length());
 
         SelectObject(hdc, g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
-        TextOutA(hdc, 25, 40, "System Hardening Compliance Utility", 35);
+        TextOutA(hdc, 20, 40, "System Hardening Compliance Utility", 35);
 
         HPEN hPenPanel = CreatePen(PS_SOLID, 1, COLOR_BORDER);
         SelectObject(hdc, g_hBrushPanel);
         SelectObject(hdc, hPenPanel);
 
-        RECT rcPanel1 = { 25, 68, 595, 574 };
+        // Main Panel (Width trimmed to 500px, Height to 495px)
+        RECT rcPanel1 = { 20, 68, 520, 563 };
         RoundRect(hdc, rcPanel1.left, rcPanel1.top, rcPanel1.right, rcPanel1.bottom, 8, 8);
 
         SelectObject(hdc, g_hFontBold);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        TextOutA(hdc, 40, 82, "Hardening Controls", 18);
+        TextOutA(hdc, 35, 82, "Hardening Controls", 18);
 
         int percent = (g_totalControls > 0) ? (g_secureCount * 100) / g_totalControls : 0;
         COLORREF barColor;
@@ -1521,7 +1400,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         else if (percent >= 50) barColor = COLOR_WARN_AMBER;
         else barColor = COLOR_DANGER_RED;
 
-        RECT rcProgBg = { 190, 87, 370, 91 };
+        RECT rcProgBg = { 185, 87,475, 91 };
         HBRUSH hTrackBrush = CreateSolidBrush(COLOR_BG);
         SelectObject(hdc, (HPEN)GetStockObject(NULL_PEN));
         SelectObject(hdc, hTrackBrush);
@@ -1542,35 +1421,45 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         snprintf(pctStr, sizeof(pctStr), "%d%%", percent);
         SetTextColor(hdc, barColor);
         SelectObject(hdc, g_hFontBold);
-        TextOutA(hdc, rcProgBg.right + 10, 82, pctStr, (int)strlen(pctStr));
+        TextOutA(hdc, 485, 82, pctStr, (int)strlen(pctStr));
 
-        int rowY = 125;
-        int rowHeight = 44;
+        // Render Hardening Rows with Icons
+        int rowY = 120;
+        int rowHeight = 38;
 
         for (int i = 0; i < 10; i++) {
+            // Draw Row Icon
+            SelectObject(hdc, g_hFontIcon);
+            SetTextColor(hdc, COLOR_TEXT_MUTED);
+            RECT rcIcon = { 35, rowY + 2, 55, rowY + 22 };
+            DrawTextW(hdc, &g_hardRows[i].iconGlyph, 1, &rcIcon, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+            // Draw Row Title
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, COLOR_TEXT_WHITE);
-            TextOutA(hdc, 40, rowY, g_hardRows[i].name, (int)strlen(g_hardRows[i].name));
+            TextOutA(hdc, 58, rowY, g_hardRows[i].name, (int)strlen(g_hardRows[i].name));
 
+            // Draw Live Subtext
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, COLOR_TEXT_MUTED);
-            TextOutA(hdc, 40, rowY + 18, g_hardRows[i].liveInfo.c_str(), (int)g_hardRows[i].liveInfo.length());
+            TextOutA(hdc, 58, rowY + 16, g_hardRows[i].liveInfo.c_str(), (int)g_hardRows[i].liveInfo.length());
 
+            // Status Label
             bool isSecure = (g_hardStates[i] == 2);
             SetTextColor(hdc, isSecure ? COLOR_ACCENT_TEAL : COLOR_DANGER_RED);
 
-            RECT rcStatus = { 330, rowY + 6, 480, rowY + 32 };
+            RECT rcStatus = { 290, rowY + 4, 430, rowY + 26 };
             std::string statusText = g_hardRows[i].statusLabel;
             DrawTextA(hdc, statusText.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
             rowY += rowHeight;
         }
 
+        // Footer Text
         SelectObject(hdc, g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
-
-        // --- NEW: Using the dynamic global string for the footer version text ---
-        TextOutA(hdc, 455, 654, g_footerVersionStr.c_str(), (int)g_footerVersionStr.length());
+        std::string footerText = std::string("CSCsecure v") + CSC_VERSION_STRING + " \xA9 2026";
+        TextOutA(hdc, 530, 578, footerText.c_str(), (int)footerText.length());
 
         DeleteObject(hPenPanel);
 
@@ -1590,24 +1479,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HDC hdc = pdis->hDC;
         UINT id = pdis->CtlID;
 
-        if (id == ID_BTN_MENU) {
-            HBRUSH hBg = CreateSolidBrush(COLOR_BG);
-            FillRect(hdc, &pdis->rcItem, hBg);
-            DeleteObject(hBg);
-
-            HBRUSH hIconBrush = CreateSolidBrush(COLOR_TEXT_WHITE);
-            RECT r1 = { pdis->rcItem.left + 5, pdis->rcItem.top + 8, pdis->rcItem.right - 5, pdis->rcItem.top + 10 };
-            RECT r2 = { pdis->rcItem.left + 5, pdis->rcItem.top + 14, pdis->rcItem.right - 5, pdis->rcItem.top + 16 };
-            RECT r3 = { pdis->rcItem.left + 5, pdis->rcItem.top + 20, pdis->rcItem.right - 5, pdis->rcItem.top + 22 };
-
-            FillRect(hdc, &r1, hIconBrush);
-            FillRect(hdc, &r2, hIconBrush);
-            FillRect(hdc, &r3, hIconBrush);
-
-            DeleteObject(hIconBrush);
-            return TRUE;
-        }
-
         if (id == ID_STATUS_BAR) {
             COLORREF statusBg = g_isExecuting ? COLOR_WARN_AMBER : COLOR_BORDER;
             HBRUSH hStatusBrush = CreateSolidBrush(statusBg);
@@ -1621,19 +1492,57 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return TRUE;
         }
 
-        if (id == ID_BTN_SECURE_ALL) {
-            HBRUSH hBtnBrush = CreateSolidBrush(g_isExecuting ? COLOR_TEXT_MUTED : COLOR_ACCENT_TEAL);
-            FillRect(hdc, &pdis->rcItem, hBtnBrush);
-            DeleteObject(hBtnBrush);
+       
+        // Draw Sidebar Buttons with MDL2 Icons
+        if (id == ID_BTN_SECURE_ALL || id == IDM_INVENTORY || id == IDM_SEARCHPASS || id == IDM_WINUPDATE) {
+            HBRUSH hBgBrush = CreateSolidBrush(COLOR_BG);
+            FillRect(hdc, &pdis->rcItem, hBgBrush);
+            DeleteObject(hBgBrush);
+
+            bool highlightSecureAll = (id == ID_BTN_SECURE_ALL && g_secureCount < g_totalControls);
+
+            HBRUSH hBtnBrush = CreateSolidBrush(highlightSecureAll ? COLOR_ACCENT_TEAL : COLOR_PANEL);
+            HPEN hPen = CreatePen(PS_SOLID, 1, highlightSecureAll ? COLOR_ACCENT_TEAL : COLOR_BORDER);
+
+            SelectObject(hdc, hPen);
+            SelectObject(hdc, hBtnBrush);
+            // Smaller corner radius (6px instead of 10px) fits compact height better
+            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
+
+            wchar_t iconGlyph = L' ';
+            if (id == ID_BTN_SECURE_ALL) iconGlyph = L'\xEA18';
+            else if (id == IDM_INVENTORY) iconGlyph = L'\xE9D9';
+            else if (id == IDM_SEARCHPASS) iconGlyph = L'\xE721';
+            else if (id == IDM_WINUPDATE) iconGlyph = L'\xE777';
 
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(0, 0, 0));
+            SetTextColor(hdc, COLOR_TEXT_WHITE);
+
+            // Icon Offset (Tightened: 10px left margin)
+            SelectObject(hdc, g_hFontIcon);
+            RECT iconRc = { pdis->rcItem.left + 10, pdis->rcItem.top, pdis->rcItem.left + 28, pdis->rcItem.bottom };
+            DrawTextW(hdc, &iconGlyph, 1, &iconRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            // Text Offset (Tightened: Starts at 30px instead of 38px)
+            char btnText[128] = { 0 };
+            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
             SelectObject(hdc, g_hFontBold);
-            DrawTextA(hdc, g_isExecuting ? "Processing..." : "Secure All", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            RECT textRc = { pdis->rcItem.left + 30, pdis->rcItem.top, pdis->rcItem.right - 8, pdis->rcItem.bottom };
+            if (id == ID_BTN_SECURE_ALL && g_isExecuting) {
+                DrawTextA(hdc, "Processing...", -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            }
+            else {
+                DrawTextA(hdc, btnText, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            }
+
+            DeleteObject(hBtnBrush);
+            DeleteObject(hPen);
             return TRUE;
         }
-
-        // Hardening Controls Button Styles
+        
+        
+        // Action Buttons
         if (id >= ID_HARD_BASE) {
             int rowIndex = (id - ID_HARD_BASE) / 10;
             bool isSecure = (g_hardStates[rowIndex] == 2);
@@ -1646,16 +1555,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             HBRUSH hBtnBrush;
             COLORREF textColor;
 
-            // Highlight button when warning; subtle outline when secured/enabled
             if (isSecure) {
                 hBtnBrush = CreateSolidBrush(COLOR_BG);
                 hPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
                 textColor = COLOR_TEXT_MUTED;
             }
             else {
-                hBtnBrush = CreateSolidBrush(COLOR_ACCENT_TEAL);
+                hBtnBrush = CreateSolidBrush(COLOR_PANEL);
                 hPen = CreatePen(PS_SOLID, 1, COLOR_ACCENT_TEAL);
-                textColor = RGB(0, 0, 0);
+                textColor = COLOR_TEXT_WHITE;
             }
 
             SelectObject(hdc, hPen);
@@ -1667,7 +1575,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, textColor);
-
             SelectObject(hdc, g_hFontBold);
             DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -1682,13 +1589,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     {
         WORD id = LOWORD(wParam);
 
-        // Burger Button now opens Popup Window instead of Dropdown Menu
-        if (id == ID_BTN_MENU) {
-            ShowDarkMenuDialog(hwnd);
-            return 0;
-        }
-
-        // --- NEW: Using the dynamic global string for the MessageBox body ---
         if (id == IDM_ABOUT) {
             std::string aboutMsg = g_appProductName + " v" + g_appVersion + "\n" + g_appDescription;
             MessageBoxA(hwnd, aboutMsg.c_str(), "About", MB_OK | MB_ICONINFORMATION);
@@ -1709,7 +1609,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (g_isExecuting) return 0;
 
-        // Individual Control Row Button Handler (Supports both Secured & Unsecured states)
         if (id >= ID_HARD_BASE) {
             int rowIndex = (id - ID_HARD_BASE) / 10;
             bool isSecured = (g_hardStates[rowIndex] == 2);
@@ -1733,12 +1632,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             case 1: SetWifiDeviceState(isSecured ? true : false); break;
             case 2: ConfigureSMB(enableOrHarden); break;
             case 3:
-                if (enableOrHarden) {
-                    OnLockdownPrintersButtonClicked();
-                }
-                else {
-                    OnRevertPrintersButtonClicked();
-                }
+                if (enableOrHarden) OnLockdownPrintersButtonClicked();
+                else OnRevertPrintersButtonClicked();
                 break;
             case 4: UnshareAllFolders(); break;
             case 5: ConfigureSslTlsIISCrypto(enableOrHarden); break;
@@ -1759,7 +1654,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
 
         if (id == ID_BTN_SECURE_ALL) {
-
             if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to secure ALL unresolved components automatically?")) {
                 return 0;
             }
@@ -1771,7 +1665,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             if (g_hardStates[0] == 1) SetBluetoothDeviceState(false);
             if (g_hardStates[1] == 1) SetWifiDeviceState(false);
             if (g_hardStates[2] == 1) ConfigureSMB(true);
-            if (g_hardStates[3] == 1) UnshareAllPrinters();
+            if (g_hardStates[3] == 1) OnLockdownPrintersButtonClicked();
             if (g_hardStates[4] == 1) UnshareAllFolders();
             if (g_hardStates[5] == 1) ConfigureSslTlsIISCrypto(true);
             if (g_hardStates[6] == 1) ConfigureBrowserAccountLock(true);
@@ -1804,6 +1698,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DeleteObject(g_hFontTitle);
         DeleteObject(g_hFontSub);
         DeleteObject(g_hFontBold);
+        DeleteObject(g_hFontIcon);
         PostQuitMessage(0);
         return 0;
     }
@@ -1819,11 +1714,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hbrBackground = NULL;
     wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
     RegisterClass(&wc);
-    std::string ver = GetFileVersionValue("ProductVersion");
-    std::string windowTitle = "CSCsecure v" + ver;
+
+    std::string windowTitle = std::string("CSCsecure v") + CSC_VERSION_STRING;
+
+    // Window dimensions reduced to 770x645 to pull in empty bottom/side space
     HWND hwnd = CreateWindowExA(0, CLASS_NAME, windowTitle.c_str(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 635, 715, NULL, NULL, hInstance, NULL);
+        CW_USEDEFAULT, CW_USEDEFAULT, 725, 665, NULL, NULL, hInstance, NULL);
 
     BOOL useDarkMode = TRUE;
     ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
