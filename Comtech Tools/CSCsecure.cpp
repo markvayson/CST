@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <time.h>
 #include <string>
+
+
 #include <vector>
 #include <regex>
 #include <fstream>
@@ -36,6 +38,10 @@
 #pragma comment(lib, "dwmapi.lib") 
 #pragma comment(lib, "version.lib")
 #pragma comment(lib, "userenv.lib")
+
+std::string g_appProductName = "";
+std::string g_appVersion = "";
+
 
 // Retrieves a StringFileInfo entry from VS_VERSION_INFO in resources
 std::string GetFileVersionValue(const char* valueName) {
@@ -126,9 +132,6 @@ std::string g_statusText = "";
 bool g_isExecuting = false;
 std::vector<std::string> g_logMemory;
 
-// System Hostname & OS 
-char g_computerName[MAX_COMPUTERNAME_LENGTH + 1] = "UNKNOWN";
-std::string g_osVersion = "Windows 11 25H2";
 
 // Metric Counts 
 int g_totalControls = 10;
@@ -138,10 +141,6 @@ int g_insecureCount = 0;
 
 int g_hardStates[10] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2 };
 
-// Dynamic Version Globals
-std::string g_appProductName = "CSCsecure";
-std::string g_appVersion = "3.1.0";
-std::string g_appDescription = "System Hardening Utility";
 
 struct HardeningRow {
     const char* name;
@@ -186,7 +185,6 @@ void LoadVersionInfoFromResource() {
 
     if (!name.empty()) g_appProductName = name;
     if (!ver.empty()) g_appVersion = ver;
-    if (!desc.empty()) g_appDescription = desc;
 }
 
 
@@ -1179,35 +1177,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             startY += rowHeight;
         }
 
-        // Timer to monitor the Search Pass child window closure 
-        SetTimer(hwnd, 1001, 500, NULL);
 
         LogMessage("Security Tool Started");
         PerformAuditAndHighlight();
         break;
     }
-
-    case WM_TIMER:
+    case WM_SEARCHPASS_CLOSED:
     {
-        if (wParam == 1001) {
-            static int offlineTicks = 0;
-            bool searchIsOpen = IsWindow(g_hSearchResultsWnd);
-
-            if (searchIsOpen) {
-                offlineTicks = 0;
-            }
-            else {
-                if (g_hBtnSearchPass && !IsWindowEnabled(g_hBtnSearchPass)) {
-                    offlineTicks++;
-                    if (offlineTicks >= 3) { // 1.5 second safety delay to ensure thread closure isn't missed
-                        EnableWindow(g_hBtnSearchPass, TRUE);
-                        InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
-                    }
-                }
-                else {
-                    offlineTicks = 0;
-                }
-            }
+        // Instantly re-enable the button the millisecond the window closes
+        if (g_hBtnSearchPass) {
+            EnableWindow(g_hBtnSearchPass, TRUE);
+            InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
         }
         break;
     }
@@ -1353,15 +1333,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             UpdateStatus("All hardening policies enforced.");
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         }
-        else if (wmId == IDM_SEARCHPASS) {
-            if (!IsWindow(g_hSearchResultsWnd)) {
-                EnableWindow(g_hBtnSearchPass, FALSE);
-                InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
-            }
-
-            std::thread(ExecuteFastSearch).detach();
-			return 0;
-        }
         else if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 100) {
             if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to change this security setting?")) {
                 return 0;
@@ -1454,16 +1425,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 
     // Optional: Load your app icon if you have it defined
-    // wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
+    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
 
     if (!RegisterClassA(&wc)) {
         return 0;
     }
 
+	LoadVersionInfoFromResource();
+
+    std::string windowTitle = g_appProductName + " v" + g_appVersion;
+	if (g_appProductName.empty()) {
+        windowTitle += "CSCsecure";
+	}
+
     HWND hwnd = CreateWindowExA(
         0,
         "CSCsecureMainClass",
-        "CSCsecure v3.1.0",
+        windowTitle.c_str(),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         NULL, NULL, hInstance, NULL
@@ -1472,7 +1450,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     if (hwnd == NULL) {
         return 0;
     }
-
+    
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 

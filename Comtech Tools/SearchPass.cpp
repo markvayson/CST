@@ -6,11 +6,12 @@
 #endif
 #include <string>
 
-extern std::string g_appProductName;
-extern std::string g_appVersion;
 
 #define WIN32_LEAN_AND_MEAN
 #include "Resource.h"
+#include "version.h"
+#include <Shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 
 // Enforce modern Visual Styles & Common Controls v6 for Header Checkboxes
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
@@ -55,11 +56,14 @@ bool g_bUpdatingCheckboxes = false;
 #define IDC_BTN_EXPORT     103
 #define IDC_BTN_CLEAR      104
 #define IDC_STATIC_COUNT   105
+#define IDC_BTN_REFRESH     107
+#define IDC_BTN_ANYDESK 108
 
 #define IDM_SEARCHPASS 106
 
 
 extern bool ShowDarkConfirmDialog(HWND hParent, const char* msg);
+extern void ShowDarkMessageDialog(HWND hParent, const char* msg);
 
 void UpdateDeleteButtonState(HWND hListView, HWND hBtn) {
     int count = ListView_GetItemCount(hListView);
@@ -72,17 +76,15 @@ void UpdateDeleteButtonState(HWND hListView, HWND hBtn) {
 
 
 bool ContainsIgnoreCase(const std::wstring& str, const std::wstring& sub) {
-    auto it = std::search(str.begin(), str.end(), sub.begin(), sub.end(),
-        [](wchar_t ch1, wchar_t ch2) { return std::towlower(ch1) == std::towlower(ch2); });
-    return it != str.end();
+    return StrStrIW(str.c_str(), sub.c_str()) != NULL;
 }
 
-void SearchDirectoryRecursive(const std::wstring& currentDir, const std::wstring& targetStr) {
+void SearchDirectoryRecursive(const std::wstring& currentDir, const std::wstring& targetStr, std::vector<std::wstring>& localFoundFiles) {
     if (ContainsIgnoreCase(currentDir, L"Windows")) return;
 
     std::wstring searchPath = currentDir + L"\\*";
     WIN32_FIND_DATAW findData;
-    HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+    HANDLE hFind = FindFirstFileExW(searchPath.c_str(), FindExInfoBasic, &findData, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
 
     if (hFind == INVALID_HANDLE_VALUE) return;
 
@@ -91,12 +93,11 @@ void SearchDirectoryRecursive(const std::wstring& currentDir, const std::wstring
             std::wstring fullPath = currentDir + L"\\" + findData.cFileName;
 
             if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                SearchDirectoryRecursive(fullPath, targetStr);
+                SearchDirectoryRecursive(fullPath, targetStr, localFoundFiles);
             }
             else {
                 if (ContainsIgnoreCase(findData.cFileName, targetStr)) {
-                    std::lock_guard<std::mutex> lock(g_resultsMutex);
-                    g_foundFiles.push_back(fullPath);
+                    localFoundFiles.push_back(fullPath);
                 }
             }
         }
@@ -255,12 +256,74 @@ LRESULT CALLBACK HeaderSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 }
 
 
+void ExecuteAnydeskRemoval(HWND hParent) {
+    // Show wait window so user knows it's scanning
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    HWND hWaitWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"ModernWaitClass", L"",
+        WS_POPUP | WS_VISIBLE, (screenW / 2) - 175, (screenH / 2) - 60, 350, 120, NULL, NULL, hInstance, NULL);
+
+    int deletedCount = 0;
+    DWORD driveMask = GetLogicalDrives();
+
+    // Scan drives iterativly
+    for (char letter = 'A'; letter <= 'Z'; ++letter) {
+        if (driveMask & (1 << (letter - 'A'))) {
+            std::wstring driveRoot = std::wstring(1, (wchar_t)letter) + L":\\";
+            if (GetDriveTypeW(driveRoot.c_str()) == DRIVE_FIXED) {
+
+                std::vector<std::wstring> dirsToScan;
+                dirsToScan.push_back(driveRoot);
+
+                while (!dirsToScan.empty()) {
+                    std::wstring currentDir = dirsToScan.back();
+                    dirsToScan.pop_back();
+
+                    if (ContainsIgnoreCase(currentDir, L"Windows")) continue;
+
+                    WIN32_FIND_DATAW findData;
+                    std::wstring searchPath = currentDir + L"\\*";
+                    HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+
+                    if (hFind != INVALID_HANDLE_VALUE) {
+                        do {
+                            if (wcscmp(findData.cFileName, L".") != 0 && wcscmp(findData.cFileName, L"..") != 0) {
+                                std::wstring fullPath = currentDir + L"\\" + findData.cFileName;
+                                if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                                    dirsToScan.push_back(fullPath);
+                                }
+                                else {
+                                    if (_wcsicmp(findData.cFileName, L"anydesk.exe") == 0) {
+                                        if (DeleteFileW(fullPath.c_str())) {
+                                            deletedCount++;
+                                        }
+                                    }
+                                }
+                            }
+                        } while (FindNextFileW(hFind, &findData));
+                        FindClose(hFind);
+                    }
+                }
+            }
+        }
+    }
+
+    DestroyWindow(hWaitWnd);
+
+    char msgBuffer[256];
+    snprintf(msgBuffer, sizeof(msgBuffer), "AnyDesk scan complete. Successfully removed %d instance(s).", deletedCount);
+    ShowDarkMessageDialog(hParent, msgBuffer);
+}
+
+
 
 HWND g_hSearchResultsWnd = NULL;
 
 LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hListView, hHeader, hBtnQuarantine, hBtnExport, hBtnClear, hStaticCount;
     static HIMAGELIST hSysImageList;
+    static HWND hBtnRefresh, hBtnAnydesk;
 
     switch (msg) {
     case WM_CREATE: {
@@ -297,15 +360,13 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             // Subclass the header to prevent resizing and cursor changes
             SetWindowSubclass(hHeader, HeaderSubclassProc, 2, 0);
         }
-        hBtnQuarantine = CreateWindowA(
-            "BUTTON", "Delete Checked",
-            WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            520, 560, 160, 32,
-            hwnd, (HMENU)IDC_BTN_QUARANTINE, NULL, NULL
-        );
-        SendMessageW(hBtnQuarantine, WM_SETFONT, (WPARAM)g_hFontSub, MAKELPARAM(TRUE, 0));
-        SetWindowTheme(hBtnQuarantine, L"DarkMode_Explorer", NULL);
+        hBtnQuarantine = CreateWindowA("BUTTON", "Delete Checked", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd, (HMENU)IDC_BTN_QUARANTINE, NULL, NULL);
+        hBtnAnydesk = CreateWindowA("BUTTON", "Remove AnyDesk", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd, (HMENU)IDC_BTN_ANYDESK, NULL, NULL);
+        hBtnRefresh = CreateWindowA("BUTTON", "Refresh", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd, (HMENU)IDC_BTN_REFRESH, NULL, NULL);
 
+        SendMessageW(hBtnQuarantine, WM_SETFONT, (WPARAM)g_hFontSub, MAKELPARAM(TRUE, 0));
+        SendMessageW(hBtnAnydesk, WM_SETFONT, (WPARAM)g_hFontSub, MAKELPARAM(TRUE, 0));
+        SendMessageW(hBtnRefresh, WM_SETFONT, (WPARAM)g_hFontSub, MAKELPARAM(TRUE, 0));
         // Bottom Left Scanned Count Label
         hStaticCount = CreateWindowW(
             L"STATIC", L"",
@@ -336,7 +397,8 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
         lvc.iSubItem = 1; lvc.pszText = (LPWSTR)L"File Path"; lvc.cx = 400; SendMessageW(hListView, LVM_INSERTCOLUMNW, 1, (LPARAM)&lvc);
         lvc.iSubItem = 2; lvc.pszText = (LPWSTR)L"Type"; lvc.cx = 70; SendMessageW(hListView, LVM_INSERTCOLUMNW, 2, (LPARAM)&lvc);
-
+        
+        SendMessageW(hListView, WM_SETREDRAW, FALSE, 0);
 
         for (size_t i = 0; i < pFiles->size(); ++i) {
             const std::wstring& path = (*pFiles)[i];
@@ -360,6 +422,9 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             lviSet.iSubItem = 2; lviSet.pszText = (LPWSTR)ext.c_str(); SendMessageW(hListView, LVM_SETITEMTEXTW, (WPARAM)i, (LPARAM)&lviSet);
         }
 
+        SendMessageW(hListView, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(hListView, NULL, TRUE);
+
         // Update Scan Count Text
         wchar_t countText[128];
         swprintf(countText, 128, L"Files scanned: %d", (int)pFiles->size());
@@ -376,7 +441,16 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
         SetWindowPos(hListView, NULL, 10, topMargin, rc.right - 20, listHeight, SWP_NOZORDER);
         SetWindowPos(hStaticCount, NULL, 15, rc.bottom - 35, 300, 23, SWP_NOZORDER);
-        SetWindowPos(hBtnQuarantine, NULL, rc.right - 160, rc.bottom - 40, 140, 30, SWP_NOZORDER);
+        
+
+        int btnWidth = 140;
+        int btnHeight = 32;
+        int margin = 10;
+
+        SetWindowPos(hBtnQuarantine, NULL, rc.right - btnWidth - margin, rc.bottom - 40, btnWidth, btnHeight, SWP_NOZORDER);
+        SetWindowPos(hBtnAnydesk, NULL, rc.right - (btnWidth * 2) - (margin * 2), rc.bottom - 40, btnWidth, btnHeight, SWP_NOZORDER);
+        SetWindowPos(hBtnRefresh, NULL, rc.right - (btnWidth * 3) - (margin * 3), rc.bottom - 40, btnWidth, btnHeight, SWP_NOZORDER);
+
 
         int totalWidth = rc.right - 20;
         int col0 = ListView_GetColumnWidth(hListView, 0);
@@ -418,21 +492,37 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                             }
                         }
                     }
-                    MessageBoxW(hwnd, L"Selected files deleted successfully.", L"Done", MB_OK | MB_ICONINFORMATION);
+
+
+                    ShowDarkMessageDialog(hwnd, "Selected file(s) deleted successfuly.");
                     UpdateHeaderCheckboxState(hListView, hHeader);
 
                     // Update count display
+
                     wchar_t countText[128];
                     swprintf(countText, 128, L"Files scanned: %d", ListView_GetItemCount(hListView));
                     SetWindowTextW(hStaticCount, countText);
+
+
+					UpdateDeleteButtonState(hListView, hBtnQuarantine);
                 }
             }
+        }
+        else if (LOWORD(wParam) == IDC_BTN_ANYDESK) {
+            if (ShowDarkConfirmDialog(hwnd, "Are you sure you want to delete all AnyDesk.exe?")) {
+                std::thread(ExecuteAnydeskRemoval, hwnd).detach();
+            }
+        }
+        else if (LOWORD(wParam) == IDC_BTN_REFRESH) {
+            // Close the current window and launch a fresh search
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
+            std::thread(ExecuteFastSearch).detach();
         }
         break;
 
     case WM_DRAWITEM: {
         LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
-        if (pdis->CtlID == IDC_BTN_QUARANTINE) {
+        if (pdis->CtlID == IDC_BTN_QUARANTINE || pdis->CtlID == IDC_BTN_ANYDESK || pdis->CtlID == IDC_BTN_REFRESH) {
             SetBkMode(pdis->hDC, TRANSPARENT);
 
             bool isDisabled = (pdis->itemState & ODS_DISABLED);
@@ -585,16 +675,10 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
                     int iconLeft = rcBg.left + 28;
 
-                    // Extract the specific file type icon directly as an HICON
-                    wchar_t filePathBuf[MAX_PATH] = { 0 };
-                    ListView_GetItemText(hListView, item, 1, filePathBuf, MAX_PATH);
-
-                    SHFILEINFOW sfiIcon = { 0 };
-                    DWORD_PTR res = SHGetFileInfoW(filePathBuf, 0, &sfiIcon, sizeof(sfiIcon), SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
-                    if (res && sfiIcon.hIcon) {
+                    HIMAGELIST hImageList = ListView_GetImageList(hListView, LVSIL_SMALL);
+                    if (hImageList && lvi.iImage >= 0) {
                         int iconTop = rcBg.top + ((rcBg.bottom - rcBg.top) - 16) / 2;
-                        DrawIconEx(hdc, iconLeft, iconTop, sfiIcon.hIcon, 16, 16, 0, NULL, DI_NORMAL);
-                        DestroyIcon(sfiIcon.hIcon);
+                        ImageList_Draw(hImageList, lvi.iImage, hdc, iconLeft, iconTop, ILD_TRANSPARENT);
                     }
                     rcText.left = rcBg.left + 50;
                 }
@@ -707,6 +791,7 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 EnableWindow(hBtn, TRUE);
                 InvalidateRect(hBtn, NULL, FALSE);
             }
+            PostMessage(g_hMainWnd, WM_SEARCHPASS_CLOSED, 0, 0);
         }
         PostQuitMessage(0);
         return 0;
@@ -828,7 +913,17 @@ void ExecuteFastSearch() {
             if (GetDriveTypeW(driveRoot.c_str()) == DRIVE_FIXED) {
                 activeThreads++;
                 searchThreads.emplace_back([driveRoot, target, &activeThreads]() {
-                    SearchDirectoryRecursive(driveRoot, target);
+                    std::vector<std::wstring> localFiles;
+
+                    // Call with 3 arguments now
+                    SearchDirectoryRecursive(driveRoot, target, localFiles);
+
+                    // Lock the global mutex just once per thread to merge the results
+                    if (!localFiles.empty()) {
+                        std::lock_guard<std::mutex> lock(g_resultsMutex);
+                        g_foundFiles.insert(g_foundFiles.end(), localFiles.begin(), localFiles.end());
+                    }
+
                     activeThreads--;
                     });
             }

@@ -12,6 +12,9 @@
 #define COLOR_WARN_AMBER  RGB(245, 158, 11)
 #define COLOR_DANGER_RED  RGB(239, 68, 68)
 
+
+
+
 // Global Brushes & Fonts (Declared as extern)
 extern HBRUSH g_hBrushBg;
 extern HBRUSH g_hBrushPanel;

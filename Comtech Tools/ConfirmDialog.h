@@ -4,3 +4,5 @@
 
 // Call this from any file that includes ConfirmDialog.h
 bool ShowDarkConfirmDialog(HWND hParent, const char* msg);
+
+void ShowDarkMessageDialog(HWND hParent, const char* msg);

@@ -17,6 +17,19 @@
 #define IDC_STATIC                      -1
 #define IDR_IISCRYPTOCLI				201
 #define IDR_CUSTOMTEMPLATE				202
+#define WM_SEARCHPASS_CLOSED (WM_APP + 1)
+
+
+
+#define IDC_LISTVIEW       101
+#define IDC_BTN_QUARANTINE 102
+#define IDC_BTN_EXPORT     103
+#define IDC_BTN_CLEAR      104
+#define IDC_STATIC_COUNT   105
+#define IDM_SEARCHPASS 106
+#define IDC_BTN_REFRESH     107
+#define IDC_BTN_ANYDESK 108
+
 
 // Next default values for new objects
 // 

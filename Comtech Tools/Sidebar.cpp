@@ -1,10 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include "Sidebar.h"
+#include "SearchPass.h"
+#include <thread>
 #include "Resource.h"
 #include "Theme.h"
 #include "Inventory.h"
 #include <commctrl.h>
 #include <shellapi.h>
+
 
 // Control & Menu IDs
 #define ID_BTN_SECURE_ALL 1003
@@ -12,6 +15,7 @@
 #define IDM_SEARCHPASS    3003
 #define IDM_WINUPDATE     3004
 #define ID_BTN_RESTART    3006
+
 
 HWND g_hBtnSearchPass = NULL;
 
@@ -22,7 +26,19 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
         RunInventoryCollection(hwnd);
         return true;
 
+
     case IDM_SEARCHPASS:
+        if (IsWindow(g_hSearchResultsWnd)) {
+            SetForegroundWindow(g_hSearchResultsWnd);
+            return true;
+        }
+        if (g_hBtnSearchPass) {
+            EnableWindow(g_hBtnSearchPass, FALSE);
+            InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
+        }
+        std::thread(ExecuteFastSearch).detach();
+        return true;
+
     case ID_BTN_SECURE_ALL:
 
         return false;

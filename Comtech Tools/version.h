@@ -1,8 +1,13 @@
 #pragma once
+#include <string>
+
+extern std::string g_appProductName;
+extern std::string g_appVersion;
+
 
 // 1. Define your version numbers here. Update ONLY these four values.
 #define CSC_VERSION_MAJOR 4
-#define CSC_VERSION_MINOR 0
+#define CSC_VERSION_MINOR 1
 #define CSC_VERSION_BUILD 0
 #define CSC_VERSION_REVISION 0
 
