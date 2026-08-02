@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
+#include "Theme.h"
 
 #include "Inventory.h"
 #include <time.h>

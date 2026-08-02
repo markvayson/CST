@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "CSCsecure.h"
+#include "ConfirmDialog.h"
 #include <windows.h>
 #include <commctrl.h>
 #include <setupapi.h>
@@ -21,6 +22,10 @@
 #include <dwmapi.h> 
 #include "Inventory.h"
 #include "version.h"
+#include "SearchPass.h"
+#include "Theme.h"
+#include <thread>
+#include "Sidebar.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -102,40 +107,22 @@ template <class T> void SafeRelease(T** ppT) {
 
 // Control & Menu IDs
 #define ID_BTN_SECURE_ALL    1003
-#define ID_STATUS_BAR        1004
 #define ID_LOG_EDIT          1005
 #define ID_BTN_MENU          1006
 #define ID_HARD_BASE         2000
-
+#ifndef IDM_ABOUT
 #define IDM_ABOUT            3002
+#endif
 #define IDM_SEARCHPASS       3003
 #define IDM_WINUPDATE        3004
 #define IDM_INVENTORY        3005
 
-// Dark Theme Color Palette
-#define COLOR_BG          RGB(11, 19, 43)
-#define COLOR_PANEL       RGB(15, 23, 42)
-#define COLOR_CARD_BG     RGB(15, 26, 48)
-#define COLOR_BORDER      RGB(30, 41, 59)
-#define COLOR_TEXT_WHITE  RGB(241, 245, 249)
-#define COLOR_TEXT_MUTED  RGB(148, 163, 184)
-#define COLOR_ACCENT_TEAL RGB(16, 185, 129)
-#define COLOR_WARN_AMBER  RGB(245, 158, 11)
-#define COLOR_DANGER_RED  RGB(239, 68, 68)
-
-// Global Brushes, Fonts, & UI Handles
-HBRUSH g_hBrushBg = NULL;
-HBRUSH g_hBrushPanel = NULL;
-HFONT  g_hFontTitle = NULL;
-HFONT  g_hFontSub = NULL;
-HFONT  g_hFontBold = NULL;
-HFONT  g_hFontIcon = NULL; // Segoe MDL2 Assets Font
-HWND   g_hMainWnd = NULL;
-HWND   g_hLogWnd = NULL;
-HWND   g_hLogEdit = NULL;
+HWND g_hMainWnd = NULL;
+HWND g_hLogWnd = NULL;
+HWND g_hLogEdit = NULL;
 
 // Execution State & Live Feedback Message
-std::string g_statusText = "Ready (Click to view logs)";
+std::string g_statusText = "";
 bool g_isExecuting = false;
 std::vector<std::string> g_logMemory;
 
@@ -155,7 +142,6 @@ int g_hardStates[10] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2 };
 std::string g_appProductName = "CSCsecure";
 std::string g_appVersion = "3.1.0";
 std::string g_appDescription = "System Hardening Utility";
-std::string g_footerVersionStr = "CSCsecure v3.1.0 \xA9 2026";
 
 struct HardeningRow {
     const char* name;
@@ -183,7 +169,7 @@ HardeningRow g_hardRows[10] = {
 struct PrinterStatus {
     std::string name;
     std::string shareName;
-    bool isShared;
+    bool isShared = false;
 };
 
 std::vector<PrinterStatus> g_printerList;
@@ -201,109 +187,10 @@ void LoadVersionInfoFromResource() {
     if (!name.empty()) g_appProductName = name;
     if (!ver.empty()) g_appVersion = ver;
     if (!desc.empty()) g_appDescription = desc;
-
-    if (!g_appProductName.empty() && !g_appVersion.empty()) {
-        g_footerVersionStr = g_appProductName + " v" + g_appVersion + " \xA9 2026";
-    }
 }
 
-bool g_confirmResult = false;
-std::string g_confirmMsg = "";
 
-LRESULT CALLBACK ConfirmWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-    case WM_CREATE: {
-        CreateWindowA("BUTTON", "Confirm", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 35, 90, 90, 30, hwnd, (HMENU)1, NULL, NULL);
-        CreateWindowA("BUTTON", "Cancel", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 145, 90, 90, 30, hwnd, (HMENU)2, NULL, NULL);
-        break;
-    }
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
 
-        FillRect(hdc, &rc, g_hBrushBg);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COLOR_TEXT_WHITE);
-        SelectObject(hdc, g_hFontSub);
-
-        RECT textRc = { 15, 25, rc.right - 15, 75 };
-        DrawTextA(hdc, g_confirmMsg.c_str(), -1, &textRc, DT_CENTER | DT_WORDBREAK);
-
-        EndPaint(hwnd, &ps);
-        break;
-    }
-    case WM_DRAWITEM: {
-        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
-        HDC hdc = pdis->hDC;
-        bool isConfirm = (pdis->CtlID == 1);
-
-        HBRUSH hBtnBrush = CreateSolidBrush(isConfirm ? COLOR_DANGER_RED : COLOR_PANEL);
-        FillRect(hdc, &pdis->rcItem, hBtnBrush);
-        DeleteObject(hBtnBrush);
-
-        HPEN hPen = CreatePen(PS_SOLID, 1, isConfirm ? COLOR_DANGER_RED : COLOR_BORDER);
-        SelectObject(hdc, hPen);
-        SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
-        DeleteObject(hPen);
-
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COLOR_TEXT_WHITE);
-        SelectObject(hdc, g_hFontBold);
-        DrawTextA(hdc, isConfirm ? "Confirm" : "Cancel", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        return TRUE;
-    }
-    case WM_COMMAND: {
-        if (LOWORD(wParam) == 1) { g_confirmResult = true; PostMessage(hwnd, WM_CLOSE, 0, 0); }
-        if (LOWORD(wParam) == 2) { g_confirmResult = false; PostMessage(hwnd, WM_CLOSE, 0, 0); }
-        break;
-    }
-    case WM_CLOSE: {
-        EnableWindow(GetParent(hwnd), TRUE);
-        SetForegroundWindow(GetParent(hwnd));
-        DestroyWindow(hwnd);
-        break;
-    }
-    }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
-bool ShowDarkConfirmDialog(HWND hParent, const char* msg) {
-    g_confirmMsg = msg;
-    g_confirmResult = false;
-
-    WNDCLASS wc = { 0 };
-    wc.lpfnWndProc = ConfirmWndProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "DarkConfirmDialog";
-    wc.hbrBackground = g_hBrushBg;
-    RegisterClass(&wc);
-
-    HWND hConfirm = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
-        "DarkConfirmDialog", "Action Required",
-        WS_POPUP | WS_BORDER | WS_CAPTION,
-        0, 0, 285, 170, hParent, NULL, GetModuleHandle(NULL), NULL);
-
-    RECT rcParent; GetWindowRect(hParent, &rcParent);
-    SetWindowPos(hConfirm, NULL,
-        rcParent.left + (rcParent.right - rcParent.left) / 2 - 142,
-        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 85,
-        285, 170, SWP_NOZORDER);
-
-    BOOL useDarkMode = TRUE;
-    ::DwmSetWindowAttribute(hConfirm, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
-
-    EnableWindow(hParent, FALSE);
-    ShowWindow(hConfirm, SW_SHOW);
-
-    MSG wmsg;
-    while (IsWindow(hConfirm) && GetMessage(&wmsg, NULL, 0, 0)) {
-        TranslateMessage(&wmsg);
-        DispatchMessage(&wmsg);
-    }
-    return g_confirmResult;
-}
 
 bool IsNetworkSecPoliciesHardened() {
     HKEY hKey;
@@ -1011,7 +898,6 @@ void SetBluetoothDeviceState(bool enable) {
         SetupDiDestroyDeviceInfoList(hDevInfo);
     }
 }
-
 void SetWifiDeviceState(bool enable) {
     HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT);
     if (hDevInfo != INVALID_HANDLE_VALUE) {
@@ -1136,8 +1022,7 @@ void PerformAuditAndHighlight() {
             if (sharedPrinters.size() == 1) g_hardRows[3].liveInfo = "Printer shared: " + sharedPrinters[0];
             else {
                 char buf[128];
-                snprintf(buf, sizeof(buf), "Shared printer: %s, and (%d) more.", sharedPrinters[0].c_str(), (int)(sharedPrinters.size() - 1));
-                g_hardRows[3].liveInfo = buf;
+                snprintf(buf, sizeof(buf), "Multiple (%d) shared printers detected.", (int)sharedPrinters.size());  g_hardRows[3].liveInfo = buf;
             }
         }
         else {
@@ -1174,7 +1059,7 @@ void PerformAuditAndHighlight() {
         if (sharedFolders.size() == 1) g_hardRows[4].liveInfo = "Folder shared: " + sharedFolders[0];
         else {
             char buf[128];
-            snprintf(buf, sizeof(buf), "Shared folder: %s, and (%d) more.", sharedFolders[0].c_str(), (int)(sharedFolders.size() - 1));
+            snprintf(buf, sizeof(buf), "Multiple (%d) shared network folders detected.", (int)sharedFolders.size());
             g_hardRows[4].liveInfo = buf;
         }
         g_hardRows[4].statusLabel = "Warning: Shared";
@@ -1265,93 +1150,65 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     switch (uMsg) {
     case WM_ERASEBKGND:
         return 1;
+
+
     case WM_CREATE:
     {
         g_hMainWnd = hwnd;
-        g_hBrushBg = CreateSolidBrush(COLOR_BG);
-        g_hBrushPanel = CreateSolidBrush(COLOR_PANEL);
+        BOOL useDarkMode = TRUE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
 
+        InitTheme();
         LoadVersionInfoFromResource();
 
-        DWORD size = sizeof(g_computerName);
-        GetComputerNameA(g_computerName, &size);
-
-        HKEY hKey;
-        char productName[128] = { 0 };
-        char displayVersion[64] = { 0 };
-        char currentBuild[64] = { 0 };
-        DWORD bufLen = sizeof(productName);
-
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            if (RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)productName, &bufLen) == ERROR_SUCCESS) {
-                bufLen = sizeof(currentBuild);
-                RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)currentBuild, &bufLen);
-
-                std::string prodStr(productName);
-                if (atoi(currentBuild) >= 22000) {
-                    size_t pos = prodStr.find("Windows 10");
-                    if (pos != std::string::npos) {
-                        prodStr.replace(pos, 10, "Windows 11");
-                    }
-                }
-
-                bufLen = sizeof(displayVersion);
-                if (RegQueryValueExA(hKey, "DisplayVersion", NULL, NULL, (LPBYTE)displayVersion, &bufLen) == ERROR_SUCCESS) {
-                    g_osVersion = prodStr + " " + std::string(displayVersion);
-                }
-                else {
-                    g_osVersion = prodStr;
-                }
-            }
-            RegCloseKey(hKey);
-        }
-
         g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        g_hFontSub = CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-        g_hFontBold = CreateFontA(13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-
-        // Segoe MDL2 Assets Font Handle for Vector Glyphs
+        g_hFontSub = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+        g_hFontBold = CreateFontA(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
         g_hFontIcon = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe MDL2 Assets");
 
-        // REFACTORED DIMENSIONS & POSITIONS
-        // Main Panel: Left 20, Width 500 (Right: 520)
-        // Action Buttons: X 440 (Inside Main Panel)
-        // Sidebar: Starts at X 535, Width 215
-        int sidebarX = 530;
-        int btnWidth = 165;
-        int btnHeight = 48;
-        int sidebarStartY = 68;
-        int spacing = 12;
+        CreateSidebarControls(hwnd);
 
-        CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            sidebarX, sidebarStartY, btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
-
-        CreateWindowA("BUTTON", "Collect Inventories", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            sidebarX, sidebarStartY + (btnHeight + spacing), btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)IDM_INVENTORY, NULL, NULL);
-
-        CreateWindowA("BUTTON", "Search Pass", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            sidebarX, sidebarStartY + (btnHeight + spacing) * 2, btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)IDM_SEARCHPASS, NULL, NULL);
-
-        CreateWindowA("BUTTON", "Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-            sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, hwnd, (HMENU)(UINT_PTR)IDM_WINUPDATE, NULL, NULL);
-
-        // Compact Status Bar at Y=575
-        CreateWindowA("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 20, 575, 430, 24, hwnd, (HMENU)(UINT_PTR)ID_STATUS_BAR, NULL, NULL);
-
-        // Compact Rows (Height: 38px)
-        int startY = 122;
+        int startY = 55;
         int rowHeight = 38;
 
         for (int i = 0; i < 10; i++) {
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-                440, startY + 4, 70, 26,
+                515, startY + 4, 70, 26, // Expanded position for more spacing
                 hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
             startY += rowHeight;
         }
 
+        // Timer to monitor the Search Pass child window closure 
+        SetTimer(hwnd, 1001, 500, NULL);
+
         LogMessage("Security Tool Started");
         PerformAuditAndHighlight();
+        break;
+    }
+
+    case WM_TIMER:
+    {
+        if (wParam == 1001) {
+            static int offlineTicks = 0;
+            bool searchIsOpen = IsWindow(g_hSearchResultsWnd);
+
+            if (searchIsOpen) {
+                offlineTicks = 0;
+            }
+            else {
+                if (g_hBtnSearchPass && !IsWindowEnabled(g_hBtnSearchPass)) {
+                    offlineTicks++;
+                    if (offlineTicks >= 3) { // 1.5 second safety delay to ensure thread closure isn't missed
+                        EnableWindow(g_hBtnSearchPass, TRUE);
+                        InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
+                    }
+                }
+                else {
+                    offlineTicks = 0;
+                }
+            }
+        }
         break;
     }
 
@@ -1372,96 +1229,93 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         FillRect(hdc, &rcClient, g_hBrushBg);
 
         SetBkMode(hdc, TRANSPARENT);
+
+        // Inside WM_PAINT of WindowProc, replace the entire Render Hardening Rows section:
+
+         // Draw a distinct background container for the controls area
+        RECT rcControlsBg = { 10, 10, 600, 55 + (10 * 38) + 10 };
+        HBRUSH hControlBgBrush = CreateSolidBrush(RGB(15, 23, 42)); // Distinct container background
+        FillRect(hdc, &rcControlsBg, hControlBgBrush);
+        DeleteObject(hControlBgBrush);
+
+        // Draw the Title
         SelectObject(hdc, g_hFontTitle);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
+        RECT rcTitle = { 15, 18, 290, 48 };
+        DrawTextA(hdc, "System Hardening Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        std::string dashTitle = std::string(g_computerName) + " - " + g_osVersion;
-        TextOutA(hdc, 20, 15, dashTitle.c_str(), (int)dashTitle.length());
 
-        SelectObject(hdc, g_hFontSub);
-        SetTextColor(hdc, COLOR_TEXT_MUTED);
-        TextOutA(hdc, 20, 40, "System Hardening Compliance Utility", 35);
+        // Calculate metrics
+        int percentMet = (g_totalControls > 0) ? (g_secureCount * 100 / g_totalControls) : 0;
 
-        HPEN hPenPanel = CreatePen(PS_SOLID, 1, COLOR_BORDER);
-        SelectObject(hdc, g_hBrushPanel);
-        SelectObject(hdc, hPenPanel);
+        // Draw Progress Bar Background
+        RECT rcProgBg = {290, 28,545, 38 }; // Positioned right of the title
+        HBRUSH hProgBgBrush = CreateSolidBrush(RGB(30, 41, 59));
+        FillRect(hdc, &rcProgBg, hProgBgBrush);
+        DeleteObject(hProgBgBrush);
 
-        // Main Panel (Width trimmed to 500px, Height to 495px)
-        RECT rcPanel1 = { 20, 68, 520, 563 };
-        RoundRect(hdc, rcPanel1.left, rcPanel1.top, rcPanel1.right, rcPanel1.bottom, 8, 8);
+        // Draw Progress Bar Fill
+        if (percentMet > 0) {
+            RECT rcProgFill = rcProgBg;
+            rcProgFill.right = rcProgBg.left + ((rcProgBg.right - rcProgBg.left) * percentMet / 100);
 
+            // Color shifts based on security level (Red -> Teal)
+            COLORREF barColor = (percentMet == 100) ? RGB(13, 148, 136) : RGB(96, 165, 250);
+            if (percentMet < 50) barColor = RGB(248, 113, 113); // Red if poor
+
+            HBRUSH hProgFillBrush = CreateSolidBrush(barColor);
+            FillRect(hdc, &rcProgFill, hProgFillBrush);
+            DeleteObject(hProgFillBrush);
+        }
+
+        // Draw Percentage Text
         SelectObject(hdc, g_hFontBold);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        TextOutA(hdc, 35, 82, "Hardening Controls", 18);
+        char progText[32];
+        snprintf(progText, sizeof(progText), "%d%%", percentMet);
+        RECT rcProgText = { 555, 20,595, 45 };
+        DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        int percent = (g_totalControls > 0) ? (g_secureCount * 100) / g_totalControls : 0;
-        COLORREF barColor;
-        if (percent >= 80) barColor = COLOR_ACCENT_TEAL;
-        else if (percent >= 50) barColor = COLOR_WARN_AMBER;
-        else barColor = COLOR_DANGER_RED;
 
-        RECT rcProgBg = { 185, 87,475, 91 };
-        HBRUSH hTrackBrush = CreateSolidBrush(COLOR_BG);
-        SelectObject(hdc, (HPEN)GetStockObject(NULL_PEN));
-        SelectObject(hdc, hTrackBrush);
-        RoundRect(hdc, rcProgBg.left, rcProgBg.top, rcProgBg.right, rcProgBg.bottom, 2, 2);
-
-        if (percent > 0) {
-            int fillWidth = (rcProgBg.right - rcProgBg.left) * percent / 100;
-            if (fillWidth < 4) fillWidth = 4;
-            RECT rcProgFg = { rcProgBg.left, rcProgBg.top, rcProgBg.left + fillWidth, rcProgBg.bottom };
-            HBRUSH hFillBrush = CreateSolidBrush(barColor);
-            SelectObject(hdc, hFillBrush);
-            RoundRect(hdc, rcProgFg.left, rcProgFg.top, rcProgFg.right, rcProgFg.bottom, 2, 2);
-            DeleteObject(hFillBrush);
-        }
-        DeleteObject(hTrackBrush);
-
-        char pctStr[32];
-        snprintf(pctStr, sizeof(pctStr), "%d%%", percent);
-        SetTextColor(hdc, barColor);
-        SelectObject(hdc, g_hFontBold);
-        TextOutA(hdc, 485, 82, pctStr, (int)strlen(pctStr));
-
-        // Render Hardening Rows with Icons
-        int rowY = 120;
+        // Render Hardening Rows
+        int startY = 55; // Shifted down for the title
         int rowHeight = 38;
 
         for (int i = 0; i < 10; i++) {
-            // Draw Row Icon
-            SelectObject(hdc, g_hFontIcon);
-            SetTextColor(hdc, COLOR_TEXT_MUTED);
-            RECT rcIcon = { 35, rowY + 2, 55, rowY + 22 };
-            DrawTextW(hdc, &g_hardRows[i].iconGlyph, 1, &rcIcon, DT_LEFT | DT_TOP | DT_SINGLELINE);
+            RECT rcRow = { 15, startY, 590, startY + rowHeight };
 
-            // Draw Row Title
+            if (i % 2 == 1) {
+                // Alternating row colors inside the container
+                HBRUSH hAltBrush = CreateSolidBrush(RGB(23, 32, 51));
+                FillRect(hdc, &rcRow, hAltBrush);
+                DeleteObject(hAltBrush);
+            }
+
+            // Icon
+            SelectObject(hdc, g_hFontIcon);
+            SetTextColor(hdc, RGB(148, 163, 184));
+            RECT rcIcon = { 20, startY + 8, 50, startY + 30 };
+            DrawTextW(hdc, &g_hardRows[i].iconGlyph, 1, &rcIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            // Name
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, COLOR_TEXT_WHITE);
-            TextOutA(hdc, 58, rowY, g_hardRows[i].name, (int)strlen(g_hardRows[i].name));
-
-            // Draw Live Subtext
+            RECT rcName = { 45, startY + 2, 310, startY + 20 };
+            DrawTextA(hdc, g_hardRows[i].name, -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            // Live Info
             SelectObject(hdc, g_hFontSub);
-            SetTextColor(hdc, COLOR_TEXT_MUTED);
-            TextOutA(hdc, 58, rowY + 16, g_hardRows[i].liveInfo.c_str(), (int)g_hardRows[i].liveInfo.length());
+            SetTextColor(hdc, RGB(148, 163, 184));
+            RECT rcInfo = { 45, startY + 18, 300, startY + 36 };
+            DrawTextA(hdc, g_hardRows[i].liveInfo.c_str(), -1, &rcInfo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
             // Status Label
-            bool isSecure = (g_hardStates[i] == 2);
-            SetTextColor(hdc, isSecure ? COLOR_ACCENT_TEAL : COLOR_DANGER_RED);
+            COLORREF statusColor = (g_hardStates[i] == 2) ? RGB(96, 165, 250) : RGB(248, 113, 113);
+            SetTextColor(hdc, statusColor);
+            RECT rcStatus = { 275, startY + 10, 505, startY + 28 };
+            DrawTextA(hdc, g_hardRows[i].statusLabel.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
-            RECT rcStatus = { 290, rowY + 4, 430, rowY + 26 };
-            std::string statusText = g_hardRows[i].statusLabel;
-            DrawTextA(hdc, statusText.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-
-            rowY += rowHeight;
+            startY += rowHeight;
         }
-
-        // Footer Text
-        SelectObject(hdc, g_hFontSub);
-        SetTextColor(hdc, COLOR_TEXT_MUTED);
-        std::string footerText = std::string("CSCsecure v") + CSC_VERSION_STRING + " \xA9 2026";
-        TextOutA(hdc, 530, 578, footerText.c_str(), (int)footerText.length());
-
-        DeleteObject(hPenPanel);
 
         BitBlt(hdcWindow, 0, 0, width, height, hdc, 0, 0, SRCCOPY);
 
@@ -1470,268 +1324,164 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         DeleteDC(hdc);
 
         EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_COMMAND:
+    {
+        int wmId = LOWORD(wParam);
+
+        if (HandleSidebarCommand(hwnd, wmId)) {
+            return 0; // The sidebar handled it, we can stop here
+        }
+
+        if (wmId == ID_BTN_SECURE_ALL) {
+            if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to enforce all hardening policies?")) {
+                return 0;
+            }
+            SetBluetoothDeviceState(false);
+            SetWifiDeviceState(false);
+            ConfigureSMB(true);
+            OnLockdownPrintersButtonClicked();
+            UnshareAllFolders();
+            ConfigureSslTlsIISCrypto(true);
+            ConfigureBrowserAccountLock(true);
+            ConfigureBrowserPasswordLock(true);
+            ConfigureLocalUsers(true);
+            ConfigureNetworkSecPolicies(true);
+            PerformAuditAndHighlight();
+            UpdateStatus("All hardening policies enforced.");
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
+        else if (wmId == IDM_SEARCHPASS) {
+            if (!IsWindow(g_hSearchResultsWnd)) {
+                EnableWindow(g_hBtnSearchPass, FALSE);
+                InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
+            }
+
+            std::thread(ExecuteFastSearch).detach();
+			return 0;
+        }
+        else if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 100) {
+            if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to change this security setting?")) {
+                return 0;
+            }
+            int rowIdx = (wmId - ID_HARD_BASE) / 10;
+            switch (rowIdx) {
+            case 0: SetBluetoothDeviceState(g_hardStates[0] ==2); break;
+            case 1: SetWifiDeviceState(g_hardStates[1] ==2); break;
+            case 2: ConfigureSMB(g_hardStates[2] != 2); break;
+            case 3:
+                if (g_hardStates[3] != 2) OnLockdownPrintersButtonClicked();
+                else OnRevertPrintersButtonClicked();
+                break;
+            case 4: UnshareAllFolders(); break;
+            case 5: ConfigureSslTlsIISCrypto(g_hardStates[5] != 2); break;
+            case 6: ConfigureBrowserAccountLock(g_hardStates[6] != 2); break;
+            case 7: ConfigureBrowserPasswordLock(g_hardStates[7] != 2); break;
+            case 8: ConfigureLocalUsers(g_hardStates[8] != 2); break;
+            case 9: ConfigureNetworkSecPolicies(g_hardStates[9] != 2); break;
+            }
+            PerformAuditAndHighlight();
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
         break;
     }
 
     case WM_DRAWITEM:
     {
         LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
-        HDC hdc = pdis->hDC;
-        UINT id = pdis->CtlID;
 
-        if (id == ID_STATUS_BAR) {
-            COLORREF statusBg = g_isExecuting ? COLOR_WARN_AMBER : COLOR_BORDER;
-            HBRUSH hStatusBrush = CreateSolidBrush(statusBg);
-            FillRect(hdc, &pdis->rcItem, hStatusBrush);
-            DeleteObject(hStatusBrush);
-
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, g_isExecuting ? RGB(0, 0, 0) : COLOR_TEXT_WHITE);
-            SelectObject(hdc, g_hFontSub);
-            DrawTextA(hdc, (" Status: " + g_statusText).c_str(), -1, &pdis->rcItem, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        // 1. Draw the Sidebar Buttons
+        if (IsSidebarButton(pdis->CtlID)) {
+            DrawSidebarButton(pdis);
             return TRUE;
         }
+        // 2. Draw the Row Action Buttons ("Secure", "Disable", "Enable")
+        else if (pdis->CtlID >= ID_HARD_BASE && pdis->CtlID < ID_HARD_BASE + 100) {
+            HDC hdc = pdis->hDC;
+            bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
 
-       
-        // Draw Sidebar Buttons with MDL2 Icons
-        if (id == ID_BTN_SECURE_ALL || id == IDM_INVENTORY || id == IDM_SEARCHPASS || id == IDM_WINUPDATE) {
-            HBRUSH hBgBrush = CreateSolidBrush(COLOR_BG);
-            FillRect(hdc, &pdis->rcItem, hBgBrush);
-            DeleteObject(hBgBrush);
+            // Background color (slightly darker when clicked)
+            COLORREF bgCol = isPressed ? RGB(15, 23, 42) : RGB(30, 41, 59);
 
-            bool highlightSecureAll = (id == ID_BTN_SECURE_ALL && g_secureCount < g_totalControls);
+            HBRUSH hBrush = CreateSolidBrush(bgCol);
+            FillRect(hdc, &pdis->rcItem, hBrush);
+            DeleteObject(hBrush);
 
-            HBRUSH hBtnBrush = CreateSolidBrush(highlightSecureAll ? COLOR_ACCENT_TEAL : COLOR_PANEL);
-            HPEN hPen = CreatePen(PS_SOLID, 1, highlightSecureAll ? COLOR_ACCENT_TEAL : COLOR_BORDER);
-
+            // Border color 
+            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(71, 85, 105));
             SelectObject(hdc, hPen);
-            SelectObject(hdc, hBtnBrush);
-            // Smaller corner radius (6px instead of 10px) fits compact height better
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
+            SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            wchar_t iconGlyph = L' ';
-            if (id == ID_BTN_SECURE_ALL) iconGlyph = L'\xEA18';
-            else if (id == IDM_INVENTORY) iconGlyph = L'\xE9D9';
-            else if (id == IDM_SEARCHPASS) iconGlyph = L'\xE721';
-            else if (id == IDM_WINUPDATE) iconGlyph = L'\xE777';
-
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLOR_TEXT_WHITE);
-
-            // Icon Offset (Tightened: 10px left margin)
-            SelectObject(hdc, g_hFontIcon);
-            RECT iconRc = { pdis->rcItem.left + 10, pdis->rcItem.top, pdis->rcItem.left + 28, pdis->rcItem.bottom };
-            DrawTextW(hdc, &iconGlyph, 1, &iconRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-            // Text Offset (Tightened: Starts at 30px instead of 38px)
-            char btnText[128] = { 0 };
-            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-            SelectObject(hdc, g_hFontBold);
-
-            RECT textRc = { pdis->rcItem.left + 30, pdis->rcItem.top, pdis->rcItem.right - 8, pdis->rcItem.bottom };
-            if (id == ID_BTN_SECURE_ALL && g_isExecuting) {
-                DrawTextA(hdc, "Processing...", -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            }
-            else {
-                DrawTextA(hdc, btnText, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            }
-
-            DeleteObject(hBtnBrush);
+            // Draw with rounded corners
+            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
             DeleteObject(hPen);
-            return TRUE;
-        }
-        
-        
-        // Action Buttons
-        if (id >= ID_HARD_BASE) {
-            int rowIndex = (id - ID_HARD_BASE) / 10;
-            bool isSecure = (g_hardStates[rowIndex] == 2);
 
-            HBRUSH hPanelBgBrush = CreateSolidBrush(COLOR_PANEL);
-            FillRect(hdc, &pdis->rcItem, hPanelBgBrush);
-            DeleteObject(hPanelBgBrush);
-
-            HPEN hPen;
-            HBRUSH hBtnBrush;
-            COLORREF textColor;
-
-            if (isSecure) {
-                hBtnBrush = CreateSolidBrush(COLOR_BG);
-                hPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
-                textColor = COLOR_TEXT_MUTED;
-            }
-            else {
-                hBtnBrush = CreateSolidBrush(COLOR_PANEL);
-                hPen = CreatePen(PS_SOLID, 1, COLOR_ACCENT_TEAL);
-                textColor = COLOR_TEXT_WHITE;
-            }
-
-            SelectObject(hdc, hPen);
-            SelectObject(hdc, hBtnBrush);
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
-
-            char btnText[128] = { 0 };
-            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-
+            // Set up text drawing
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, textColor);
+            SetTextColor(hdc, RGB(255, 255, 255)); // White text
             SelectObject(hdc, g_hFontBold);
+
+            // Retrieve the text ("Secure", "Enable", etc.) and draw it
+            char btnText[32] = { 0 };
+            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
             DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            DeleteObject(hBtnBrush);
-            DeleteObject(hPen);
             return TRUE;
         }
-        break;
+        return TRUE;
     }
 
-    case WM_COMMAND:
-    {
-        WORD id = LOWORD(wParam);
-
-        if (id == IDM_ABOUT) {
-            std::string aboutMsg = g_appProductName + " v" + g_appVersion + "\n" + g_appDescription;
-            MessageBoxA(hwnd, aboutMsg.c_str(), "About", MB_OK | MB_ICONINFORMATION);
-            return 0;
-        }
-
-        if (id == IDM_SEARCHPASS) { MessageBoxA(hwnd, "Search Pass module loaded.", "Action", MB_OK); return 0; }
-        if (id == IDM_WINUPDATE) { RunSilentCmd("start ms-settings:windowsupdate"); return 0; }
-        if (id == IDM_INVENTORY) {
-            RunInventoryCollection(hwnd);
-            return 0;
-        }
-
-        if (id == ID_STATUS_BAR) {
-            ShowLogWindow(hwnd);
-            return 0;
-        }
-
-        if (g_isExecuting) return 0;
-
-        if (id >= ID_HARD_BASE) {
-            int rowIndex = (id - ID_HARD_BASE) / 10;
-            bool isSecured = (g_hardStates[rowIndex] == 2);
-
-            const char* confirmPrompt = isSecured ?
-                "Are you sure you want to change / restore this setting?" :
-                "Are you sure you want to secure this component?";
-
-            if (!ShowDarkConfirmDialog(hwnd, confirmPrompt)) {
-                return 0;
-            }
-
-            g_isExecuting = true;
-            SetCursor(LoadCursor(NULL, IDC_WAIT));
-            UpdateStatus("Processing security component...");
-
-            bool enableOrHarden = !isSecured;
-
-            switch (rowIndex) {
-            case 0: SetBluetoothDeviceState(isSecured ? true : false); break;
-            case 1: SetWifiDeviceState(isSecured ? true : false); break;
-            case 2: ConfigureSMB(enableOrHarden); break;
-            case 3:
-                if (enableOrHarden) OnLockdownPrintersButtonClicked();
-                else OnRevertPrintersButtonClicked();
-                break;
-            case 4: UnshareAllFolders(); break;
-            case 5: ConfigureSslTlsIISCrypto(enableOrHarden); break;
-            case 6: ConfigureBrowserAccountLock(enableOrHarden); break;
-            case 7: ConfigureBrowserPasswordLock(enableOrHarden); break;
-            case 8: ConfigureLocalUsers(enableOrHarden); break;
-            case 9: ConfigureNetworkSecPolicies(enableOrHarden); break;
-            }
-
-            PerformAuditAndHighlight();
-
-            g_isExecuting = false;
-            SetCursor(LoadCursor(NULL, IDC_ARROW));
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            UpdateStatus("Ready (Click to view logs)");
-
-            return 0;
-        }
-
-        if (id == ID_BTN_SECURE_ALL) {
-            if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to secure ALL unresolved components automatically?")) {
-                return 0;
-            }
-
-            g_isExecuting = true;
-            SetCursor(LoadCursor(NULL, IDC_WAIT));
-            UpdateStatus("Securing all unsecured components...");
-
-            if (g_hardStates[0] == 1) SetBluetoothDeviceState(false);
-            if (g_hardStates[1] == 1) SetWifiDeviceState(false);
-            if (g_hardStates[2] == 1) ConfigureSMB(true);
-            if (g_hardStates[3] == 1) OnLockdownPrintersButtonClicked();
-            if (g_hardStates[4] == 1) UnshareAllFolders();
-            if (g_hardStates[5] == 1) ConfigureSslTlsIISCrypto(true);
-            if (g_hardStates[6] == 1) ConfigureBrowserAccountLock(true);
-            if (g_hardStates[7] == 1) ConfigureBrowserPasswordLock(true);
-            if (g_hardStates[8] == 1) ConfigureLocalUsers(true);
-            if (g_hardStates[9] == 1) ConfigureNetworkSecPolicies(true);
-
-            PerformAuditAndHighlight();
-
-            g_isExecuting = false;
-            SetCursor(LoadCursor(NULL, IDC_ARROW));
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            UpdateStatus("Ready (Click to view logs)");
-        }
-        break;
-    }
-
-    case WM_SETCURSOR:
-    {
-        if (g_isExecuting) {
-            SetCursor(LoadCursor(NULL, IDC_WAIT));
-            return TRUE;
-        }
-        break;
-    }
+    
 
     case WM_DESTROY:
-        DeleteObject(g_hBrushBg);
-        DeleteObject(g_hBrushPanel);
-        DeleteObject(g_hFontTitle);
-        DeleteObject(g_hFontSub);
-        DeleteObject(g_hFontBold);
-        DeleteObject(g_hFontIcon);
         PostQuitMessage(0);
         return 0;
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    return DefWindowProcA(hwnd, uMsg, wParam, lParam);
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    const char CLASS_NAME[] = "ModernSecPackageTool";
-    WNDCLASS wc = { };
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
+    INITCOMMONCONTROLSEX icex = { sizeof(icex), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES };
+    InitCommonControlsEx(&icex);
+
+    WNDCLASSA wc = { 0 };
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
-    wc.lpszClassName = CLASS_NAME;
-    wc.hbrBackground = NULL;
-    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
-    RegisterClass(&wc);
+    wc.lpszClassName = "CSCsecureMainClass";
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 
-    std::string windowTitle = std::string("CSCsecure v") + CSC_VERSION_STRING;
+    // Optional: Load your app icon if you have it defined
+    // wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
 
-    // Window dimensions reduced to 770x645 to pull in empty bottom/side space
-    HWND hwnd = CreateWindowExA(0, CLASS_NAME, windowTitle.c_str(),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 725, 665, NULL, NULL, hInstance, NULL);
+    if (!RegisterClassA(&wc)) {
+        return 0;
+    }
 
-    BOOL useDarkMode = TRUE;
-    ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
-    ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &useDarkMode, sizeof(useDarkMode));
+    HWND hwnd = CreateWindowExA(
+        0,
+        "CSCsecureMainClass",
+        "CSCsecure v3.1.0",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+        NULL, NULL, hInstance, NULL
+    );
+
+    if (hwnd == NULL) {
+        return 0;
+    }
 
     ShowWindow(hwnd, nCmdShow);
+    UpdateWindow(hwnd);
 
-    MSG msg = { };
+    // Standard Message Loop
+    MSG msg = { 0 };
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-    return 0;
+
+    return (int)msg.wParam;
 }

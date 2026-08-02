@@ -156,16 +156,24 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="ConfirmDialog.h" />
     <ClInclude Include="CSCsecure.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Inventory.h" />
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="SearchPass.h" />
+    <ClInclude Include="Sidebar.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="Theme.h" />
     <ClInclude Include="version.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ConfirmDialog.cpp" />
     <ClCompile Include="CSCsecure.cpp" />
     <ClCompile Include="Inventory.cpp" />
+    <ClCompile Include="SearchPass.cpp" />
+    <ClCompile Include="Sidebar.cpp" />
+    <ClCompile Include="Theme.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="CSCsecure.rc" />
