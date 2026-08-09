@@ -7,6 +7,7 @@
 #include "Inventory.h"
 #include <commctrl.h>
 #include <shellapi.h>
+#include "ConfirmDialog.h"
 
 
 // Control & Menu IDs
@@ -44,8 +45,32 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
         return false;
 
     case ID_BTN_RESTART:
-        // You will need to insert your specific Win32 restart routine here
-        MessageBoxW(hwnd, L"Initiating System Restart...", L"CSCsecure", MB_OK | MB_ICONWARNING);
+        // Trigger the custom dark mode confirmation dialog
+        if (ShowDarkConfirmDialog(hwnd, "System Restart", "Are you sure you want to restart the computer?")) {
+
+            HANDLE hToken;
+            TOKEN_PRIVILEGES tkp;
+
+            // 1. Get a token for this process to adjust privileges
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+
+                // 2. Get the LUID for the shutdown privilege
+                LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+
+                tkp.PrivilegeCount = 1;
+                tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+                // 3. Elevate the process token with the shutdown privilege
+                AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+
+                // 4. If privilege escalation is successful, invoke the restart
+                if (GetLastError() == ERROR_SUCCESS) {
+                    // EWX_REBOOT shuts down and restarts the system.
+                    // EWX_FORCE forces processes to terminate without prompting the user.
+                    ExitWindowsEx(EWX_REBOOT | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER);
+                }
+            }
+        }
         return true;
 
 
@@ -113,7 +138,7 @@ void CreateSidebarControls(HWND hwndParent) {
     int aboutY = restartY - btnHeight - spacing;
 
   
-    HWND hBtnRestart = CreateWindowA("BUTTON", "Restart", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    HWND hBtnRestart = CreateWindowA("BUTTON", "Restart Device", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, restartY, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_RESTART, NULL, NULL);
     SetWindowSubclass(hBtnRestart, SidebarBtnSubclassProc, 1, 0);
 
@@ -200,7 +225,7 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     else if (ctlId == IDM_INVENTORY) icon = L'\xE9F9';
     else if (ctlId == IDM_SEARCHPASS) icon = L'\xE192';
     else if (ctlId == IDM_WINUPDATE) icon = L'\xE895';
-    else if (ctlId == ID_BTN_RESTART) icon = L'\xE14C';
+    else if (ctlId == ID_BTN_RESTART) icon = L'\xE7E8';
 
     SetTextColor(hdc, textColor);
 
