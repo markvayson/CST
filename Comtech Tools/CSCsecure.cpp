@@ -936,27 +936,27 @@ void ConfigureBrowserPasswordLock(bool lockPasswords) {
 
         PurgeBrowserCredentialDatabases();
     }
-}
-
-void SetBluetoothDeviceState(bool enable) {
-    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_BLUETOOTH, NULL, NULL, DIGCF_PRESENT);
-    if (hDevInfo != INVALID_HANDLE_VALUE) {
-        SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-        for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
-            SP_PROPCHANGE_PARAMS pcp;
-            pcp.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
-            pcp.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
-            pcp.StateChange = enable ? DPC_ENABLE : DPC_DISABLE;
-            pcp.Scope = DCPC_GLOBAL;
-            pcp.HwProfile = 0;
-
-            if (SetupDiSetClassInstallParams(hDevInfo, &devInfoData, &pcp.ClassInstallHeader, sizeof(pcp))) {
-                SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, hDevInfo, &devInfoData);
-            }
-        }
-        SetupDiDestroyDeviceInfoList(hDevInfo);
     }
-}
+
+    void SetBluetoothDeviceState(bool enable) {
+        HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_BLUETOOTH, NULL, NULL, DIGCF_PRESENT);
+        if (hDevInfo != INVALID_HANDLE_VALUE) {
+            SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
+            for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
+                SP_PROPCHANGE_PARAMS pcp;
+                pcp.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
+                pcp.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
+                pcp.StateChange = enable ? DPC_ENABLE : DPC_DISABLE;
+                pcp.Scope = DCPC_GLOBAL;
+                pcp.HwProfile = 0;
+
+                if (SetupDiSetClassInstallParams(hDevInfo, &devInfoData, &pcp.ClassInstallHeader, sizeof(pcp))) {
+                    SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, hDevInfo, &devInfoData);
+                }
+            }
+            SetupDiDestroyDeviceInfoList(hDevInfo);
+        }
+    }
 void SetWifiDeviceState(bool enable) {
     HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT);
     if (hDevInfo != INVALID_HANDLE_VALUE) {
@@ -1358,6 +1358,36 @@ void PerformAuditAndHighlight() {
     if (!unneededFeaturesActive) g_secureCount++; else g_insecureCount++;
 }
 
+LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    switch (uMsg) {
+    case WM_MOUSEMOVE: {
+        // If it isn't already hovered, set the property and start tracking
+        if (!GetPropA(hWnd, "Hovered")) {
+            SetPropA(hWnd, "Hovered", (HANDLE)1);
+
+            TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0 };
+            TrackMouseEvent(&tme);
+
+            InvalidateRect(hWnd, NULL, FALSE);
+        }
+        break;
+    }
+    case WM_MOUSELEAVE: {
+        // Mouse left the button, remove property and redraw
+        RemovePropA(hWnd, "Hovered");
+        InvalidateRect(hWnd, NULL, FALSE);
+        break;
+    }
+    case WM_DESTROY: {
+        RemovePropA(hWnd, "Hovered");
+        RemoveWindowSubclass(hWnd, HoverButtonProc, uIdSubclass);
+        break;
+    }
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+
 // --- WINDOW PROC ---
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -1387,8 +1417,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         for (int i = 0; i < 11; i++) {
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-                515, startY + 4, 70, 26, // Expanded position for more spacing
+                515, startY + 4, 70, 26,
                 hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
+
+            SetWindowSubclass(g_hardRows[i].hBtnAction, HoverButtonProc, 0, 0);
             startY += rowHeight;
         }
 
@@ -1600,9 +1632,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         else if (pdis->CtlID >= ID_HARD_BASE && pdis->CtlID < ID_HARD_BASE + 120) {
             HDC hdc = pdis->hDC;
             bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
+            bool isHovered = GetPropA(pdis->hwndItem, "Hovered") != NULL;
 
-            // Background color (slightly darker when clicked)
-            COLORREF bgCol = isPressed ? RGB(15, 23, 42) : RGB(30, 41, 59);
+            COLORREF bgCol;
+            if (isPressed) {
+                bgCol = RGB(15, 23, 42); // Pressed color[cite: 3]
+            }
+            else if (isHovered) {
+                bgCol = RGB(51, 65, 85); // NEW: Lighter shade for hover
+            }
+            else {
+                bgCol = RGB(30, 41, 59); // Default color[cite: 3]
+            }
 
             HBRUSH hBrush = CreateSolidBrush(bgCol);
             FillRect(hdc, &pdis->rcItem, hBrush);
@@ -1670,7 +1711,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         0,
         "CSCsecureMainClass",
         windowTitle.c_str(),
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         NULL, NULL, hInstance, NULL
     );

@@ -8,7 +8,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include "ConfirmDialog.h"
-
+#include <string>
 
 // Control & Menu IDs
 #define ID_BTN_SECURE_ALL 1003
@@ -16,6 +16,7 @@
 #define IDM_SEARCHPASS    3003
 #define IDM_WINUPDATE     3004
 #define ID_BTN_RESTART    3006
+#define ID_SIDEBAR_SYSINFO 3010
 
 
 HWND g_hBtnSearchPass = NULL;
@@ -71,6 +72,10 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
                 }
             }
         }
+        return true;
+
+    case ID_SIDEBAR_SYSINFO:
+        ShellExecuteA(hwnd, "open", "ms-settings:about", NULL, NULL, SW_SHOW);
         return true;
 
 
@@ -135,7 +140,47 @@ void CreateSidebarControls(HWND hwndParent) {
 
     int bottomMargin = 20;
     int restartY = rcClient.bottom - btnHeight - bottomMargin;
-    int aboutY = restartY - btnHeight - spacing;
+
+    char hostName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
+    DWORD size = sizeof(hostName);
+    GetComputerNameA(hostName, &size);
+
+    char osName[128] = "Unknown OS";
+    char osVer[64] = "";
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD bufSize = sizeof(osName);
+        RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)osName, &bufSize);
+
+        bufSize = sizeof(osVer);
+        RegQueryValueExA(hKey, "DisplayVersion", NULL, NULL, (LPBYTE)osVer, &bufSize);
+
+        // Correct the Windows 11 registry bug
+        char buildBuf[64] = { 0 };
+        bufSize = sizeof(buildBuf);
+        if (RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)buildBuf, &bufSize) == ERROR_SUCCESS) {
+            if (atoi(buildBuf) >= 22000) {
+                std::string sName = osName;
+                size_t pos = sName.find("Windows 10");
+                if (pos != std::string::npos) {
+                    sName.replace(pos, 10, "Windows 11");
+                    strcpy_s(osName, sizeof(osName), sName.c_str());
+                }
+            }
+        }
+        RegCloseKey(hKey);
+    }
+
+    char sysInfoFull[256];
+    snprintf(sysInfoFull, sizeof(sysInfoFull), "Host|%s\nOS|%s\nVersion|%s", hostName, osName, osVer);
+
+    int sysInfoHeight = 115;
+    int sysInfoY = restartY - sysInfoHeight - spacing;
+
+    HWND hSysInfoPanel = CreateWindowA("BUTTON", sysInfoFull, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+        sidebarX, sysInfoY, btnWidth, sysInfoHeight, hwndParent, (HMENU)(UINT_PTR)ID_SIDEBAR_SYSINFO, NULL, NULL);
+    SetWindowSubclass(hSysInfoPanel, SidebarBtnSubclassProc, 1, 0);
+    
 
   
     HWND hBtnRestart = CreateWindowA("BUTTON", "Restart Device", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
@@ -150,7 +195,8 @@ bool IsSidebarButton(UINT ctlId) {
         ctlId == IDM_INVENTORY ||
         ctlId == IDM_SEARCHPASS ||
         ctlId == IDM_WINUPDATE ||
-        ctlId == ID_BTN_RESTART);
+        ctlId == ID_BTN_RESTART ||
+        ctlId == ID_SIDEBAR_SYSINFO);
 }
 
 
@@ -159,6 +205,97 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     UINT ctlId = pdis->CtlID;
 
     SetBkMode(hdc, TRANSPARENT);
+
+
+    // --- Custom drawing for System Info Panel ---
+    if (ctlId == ID_SIDEBAR_SYSINFO) {
+        
+
+        bool isPressed = (pdis->itemState & ODS_SELECTED) != 0; 
+            POINT pt; GetCursorPos(&pt); ScreenToClient(pdis->hwndItem, &pt); 
+            RECT rcClient; GetClientRect(pdis->hwndItem, &rcClient); 
+            bool isHovered = PtInRect(&rcClient, pt); 
+
+            COLORREF bgCol = isPressed ? RGB(15, 23, 42) : (isHovered ? RGB(23, 32, 51) : COLOR_PANEL); 
+            COLORREF borderColor = isHovered ? RGB(71, 85, 105) : COLOR_BORDER; 
+
+            // 1. Panel Background & Border (FIXED: Using bgCol and borderColor)
+            HBRUSH hBrush = CreateSolidBrush(bgCol);
+        FillRect(hdc, &pdis->rcItem, hBrush); 
+            DeleteObject(hBrush); 
+
+            HPEN hPen = CreatePen(PS_SOLID, 1, borderColor);
+        SelectObject(hdc, hPen); 
+            SelectObject(hdc, GetStockObject(NULL_BRUSH)); 
+            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6); 
+            DeleteObject(hPen); 
+
+            int currentY = pdis->rcItem.top + 10; 
+
+            // 2. Header Icon & Title
+            SetTextColor(hdc, COLOR_ACCENT_TEAL); 
+            SelectObject(hdc, g_hFontIcon); 
+            RECT rcHeaderIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 }; 
+            wchar_t infoIcon = L'\xE946'; 
+            DrawTextW(hdc, &infoIcon, 1, &rcHeaderIcon, DT_LEFT | DT_TOP | DT_SINGLELINE); 
+
+            SelectObject(hdc, g_hFontBold); 
+            RECT rcHeaderText = { pdis->rcItem.left + 34, currentY, pdis->rcItem.right, currentY + 20 }; 
+            DrawTextA(hdc, "System Information", -1, &rcHeaderText, DT_LEFT | DT_TOP | DT_SINGLELINE); 
+
+            currentY += 26; 
+
+            // 3. Parse and Draw Info Rows
+            char sysInfoText[256] = { 0 }; 
+            GetWindowTextA(pdis->hwndItem, sysInfoText, sizeof(sysInfoText)); 
+
+            char* context = NULL; 
+            char* line = strtok_s(sysInfoText, "\n", &context); 
+
+            while (line != NULL) {
+                
+                std::string s(line); 
+                    size_t delimPos = s.find("|"); 
+
+                    if (delimPos != std::string::npos) {
+                        
+                        std::string label = s.substr(0, delimPos); 
+                            std::string value = s.substr(delimPos + 1); 
+
+                            wchar_t rowIcon = L'\xE7F8'; 
+                            if (label == "Host") rowIcon = L'\xE7F4'; 
+                            else if (label == "OS") rowIcon = L'\xE8A9'; 
+                            else if (label == "Version") rowIcon = L'\xE835'; 
+
+                                // Draw Row Icon
+                                SetTextColor(hdc, COLOR_TEXT_MUTED); 
+                                SelectObject(hdc, g_hFontIcon); 
+                                RECT rcRowIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 }; 
+                                DrawTextW(hdc, &rowIcon, 1, &rcRowIcon, DT_LEFT | DT_TOP | DT_SINGLELINE); 
+
+                                // Draw Label
+                                SetTextColor(hdc, COLOR_TEXT_WHITE); 
+                                SelectObject(hdc, g_hFontSub); 
+                                RECT rcLabel = { pdis->rcItem.left + 32, currentY, pdis->rcItem.right, currentY + 20 }; 
+                                DrawTextA(hdc, label.c_str(), -1, &rcLabel, DT_LEFT | DT_TOP | DT_SINGLELINE); 
+
+                                // Calculate Label Width to dynamically offset Value rect
+                                SIZE szLabel; 
+                                GetTextExtentPoint32A(hdc, label.c_str(), (int)label.length(), &szLabel); 
+
+                                // Draw Value
+                                SetTextColor(hdc, COLOR_ACCENT_TEAL); 
+                                int valueLeft = rcLabel.left + szLabel.cx + 6; 
+                                RECT rcValue = { valueLeft, currentY, pdis->rcItem.right - 12, currentY + 20 }; 
+                                DrawTextA(hdc, value.c_str(), -1, &rcValue, DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS); 
+                    }
+
+                currentY += 22; 
+                    line = strtok_s(NULL, "\n", &context); 
+            }
+        return; 
+    }
+    // ------------------------------------------------
 
     bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
     bool isDisabled = (pdis->itemState & ODS_DISABLED) != 0;
