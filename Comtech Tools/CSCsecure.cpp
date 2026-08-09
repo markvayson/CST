@@ -134,12 +134,12 @@ std::vector<std::string> g_logMemory;
 
 
 // Metric Counts 
-int g_totalControls = 10;
+int g_totalControls = 11;
 int g_secureCount = 0;
 int g_attentionCount = 0;
 int g_insecureCount = 0;
 
-int g_hardStates[10] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2 };
+int g_hardStates[11] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2 };
 
 
 struct HardeningRow {
@@ -152,7 +152,7 @@ struct HardeningRow {
 };
 
 // Row Definitions with Segoe MDL2 Icon Codes
-HardeningRow g_hardRows[10] = {
+HardeningRow g_hardRows[11] = {
     {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL},
     {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL},
     {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL},
@@ -160,9 +160,10 @@ HardeningRow g_hardRows[10] = {
     {"Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", L'\xE8B7', NULL},
     {"SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", L'\xE72E', NULL},
     {"Browser Account Login", "Auditing...", "Auditing...", "Lock", L'\xE77B', NULL},
-    {"Browser Password Lock", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL},
+    {"Browser Password Lock & Removal", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL},
     {"Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL},
-    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL}
+    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL},
+    {"Legacy & Unused Windows Features", "Auditing...", "Auditing...", "Disable", L'\xE74C', NULL} // New Control
 };
 
 struct PrinterStatus {
@@ -708,6 +709,62 @@ bool IsWifiAdapterEnabled() {
     return foundPhysicalWifi ? wifiEnabled : false;
 }
 
+void SecureDeleteFile(const std::wstring& filePath) {
+    if (GetFileAttributesW(filePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(filePath.c_str());
+    }
+}
+
+void PurgeBrowserCredentialDatabases() {
+    WIN32_FIND_DATAW findData;
+    // Iterate through all directories in C:\Users
+    HANDLE hFind = FindFirstFileW(L"C:\\Users\\*", &findData);
+
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        // Only process directories and skip system/hidden/current/parent directories
+        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            std::wstring dirName = findData.cFileName;
+
+            if (dirName != L"." && dirName != L".." &&
+                dirName != L"Public" && dirName != L"Default" && dirName != L"Default User") {
+
+                std::wstring basePath = L"C:\\Users\\" + dirName + L"\\AppData\\";
+
+                // Chromium-Based Browsers (Targets the 'Default' profile)
+                SecureDeleteFile(basePath + L"Local\\Google\\Chrome\\User Data\\Default\\Login Data");
+                SecureDeleteFile(basePath + L"Local\\Google\\Chrome\\User Data\\Default\\Login Data-journal");
+
+                SecureDeleteFile(basePath + L"Local\\Microsoft\\Edge\\User Data\\Default\\Login Data");
+                SecureDeleteFile(basePath + L"Local\\Microsoft\\Edge\\User Data\\Default\\Login Data-journal");
+
+                SecureDeleteFile(basePath + L"Local\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data");
+                SecureDeleteFile(basePath + L"Local\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data-journal");
+
+                // Firefox (Requires iterating through the Profiles directory)
+                std::wstring ffProfilesPath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\*";
+                WIN32_FIND_DATAW ffFindData;
+                HANDLE hFfFind = FindFirstFileW(ffProfilesPath.c_str(), &ffFindData);
+
+                if (hFfFind != INVALID_HANDLE_VALUE) {
+                    do {
+                        std::wstring ffDir = ffFindData.cFileName;
+                        if (ffDir != L"." && ffDir != L"..") {
+                            std::wstring profilePath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\" + ffDir + L"\\";
+                            SecureDeleteFile(profilePath + L"logins.json");
+                            SecureDeleteFile(profilePath + L"key4.db"); // Firefox decryption key
+                        }
+                    } while (FindNextFileW(hFfFind, &ffFindData));
+                    FindClose(hFfFind);
+                }
+            }
+        }
+    } while (FindNextFileW(hFind, &findData));
+
+    FindClose(hFind);
+}
+
 bool IsSpoolerClientConnectionsDisabled() {
     HKEY hKey;
     DWORD value = 0;
@@ -874,6 +931,10 @@ void ConfigureBrowserPasswordLock(bool lockPasswords) {
     }
     if (lockPasswords) {
         RunSilentCmd("taskkill /F /IM msedge.exe /IM chrome.exe /IM firefox.exe /IM brave.exe /IM opera.exe /IM vivaldi.exe /T >nul 2>&1");
+
+        Sleep(500);
+
+        PurgeBrowserCredentialDatabases();
     }
 }
 
@@ -968,6 +1029,120 @@ void ConfigureSMB(bool harden) {
 
 void ConfigureSslTlsIISCrypto(bool harden) {
     RunEmbeddedIISCrypto(harden);
+}
+
+DWORD GetFileSizeSafe(const std::wstring& filePath) {
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return 0;
+
+    DWORD size = GetFileSize(hFile, NULL);
+    CloseHandle(hFile);
+
+    return (size == INVALID_FILE_SIZE) ? 0 : size;
+}
+
+bool AreBrowserCredentialsPresent() {
+    WIN32_FIND_DATAW findData;
+    HANDLE hFind = FindFirstFileW(L"C:\\Users\\*", &findData);
+    if (hFind == INVALID_HANDLE_VALUE) return false;
+
+    bool foundData = false;
+    do {
+        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            std::wstring dirName = findData.cFileName;
+
+            if (dirName != L"." && dirName != L".." &&
+                dirName != L"Public" && dirName != L"Default" && dirName != L"Default User") {
+
+                std::wstring basePath = L"C:\\Users\\" + dirName + L"\\AppData\\";
+
+                // Chromium empty DBs are ~24KB to 32KB. We flag anything > 45KB (45000 bytes) as containing user data.
+                if (GetFileSizeSafe(basePath + L"Local\\Google\\Chrome\\User Data\\Default\\Login Data") > 45000) foundData = true;
+                if (GetFileSizeSafe(basePath + L"Local\\Microsoft\\Edge\\User Data\\Default\\Login Data") > 45000) foundData = true;
+                if (GetFileSizeSafe(basePath + L"Local\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data") > 45000) foundData = true;
+
+                // Firefox empty logins.json is basically empty. We flag anything > 100 bytes.
+                std::wstring ffProfilesPath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\*";
+                WIN32_FIND_DATAW ffFindData;
+                HANDLE hFfFind = FindFirstFileW(ffProfilesPath.c_str(), &ffFindData);
+
+                if (hFfFind != INVALID_HANDLE_VALUE) {
+                    do {
+                        std::wstring ffDir = ffFindData.cFileName;
+                        if (ffDir != L"." && ffDir != L"..") {
+                            std::wstring profilePath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\" + ffDir + L"\\";
+                            if (GetFileSizeSafe(profilePath + L"logins.json") > 100) foundData = true;
+                        }
+                    } while (FindNextFileW(hFfFind, &ffFindData));
+                    FindClose(hFfFind);
+                }
+            }
+        }
+    } while (!foundData && FindNextFileW(hFind, &findData));
+
+    FindClose(hFind);
+    return foundData;
+}
+
+bool AreUnneededWindowsFeaturesEnabled() {
+    // 1. Check IIS Web Server (Registry Key exists if installed)
+    bool iisEnabled = false;
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\InetStp", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        iisEnabled = true;
+        RegCloseKey(hKey);
+    }
+
+    // 2. Check IIS Hostable Web Core (DLL exists if installed)
+    bool hwcEnabled = (GetFileAttributesW(L"C:\\Windows\\System32\\inetsrv\\hwebcore.dll") != INVALID_FILE_ATTRIBUTES);
+
+    // 3. Check SMB 1.0 Feature (Service start type)
+    bool smb1Enabled = false;
+    DWORD startVal = 4;
+    DWORD dwSize = sizeof(DWORD);
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\mrxsmb10", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExA(hKey, "Start", NULL, NULL, (LPBYTE)&startVal, &dwSize) == ERROR_SUCCESS) {
+            if (startVal < 4) smb1Enabled = true;
+        }
+        RegCloseKey(hKey);
+    }
+
+    // 4. Check SMB Direct Feature (Service start type)
+    bool smbDirectEnabled = false;
+    startVal = 4;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\smbdirect", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExA(hKey, "Start", NULL, NULL, (LPBYTE)&startVal, &dwSize) == ERROR_SUCCESS) {
+            if (startVal < 4) smbDirectEnabled = true;
+        }
+        RegCloseKey(hKey);
+    }
+
+    // 5. Check Telnet Client/Server (Executable exists if installed)
+    bool telnetEnabled = (GetFileAttributesW(L"C:\\Windows\\System32\\telnet.exe") != INVALID_FILE_ATTRIBUTES);
+
+    return (iisEnabled || hwcEnabled || smb1Enabled || smbDirectEnabled || telnetEnabled);
+}
+
+void DisableUnneededWindowsFeatures() {
+    UpdateStatus("Disabling unused Windows features (This may take a few moments)...");
+
+    // Use DISM to cleanly uninstall the features from the OS image
+    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:IIS-WebServerRole /Quiet /NoRestart");
+    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:IIS-HostableWebCore /Quiet /NoRestart");
+    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:SMB1Protocol /Quiet /NoRestart");
+    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:SmbDirect /Quiet /NoRestart");
+    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:TelnetClient /Quiet /NoRestart");
+    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:TelnetServer /Quiet /NoRestart"); // Catch server OS variants
+
+    // Fallback: Ensure services are killed in the registry just in case DISM skips
+    HKEY hKey;
+    DWORD disabled = 4;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\smbdirect", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "Start", 0, REG_DWORD, (const BYTE*)&disabled, sizeof(disabled));
+        RegCloseKey(hKey);
+    }
+
+    UpdateStatus("Unused Windows features completely disabled.");
 }
 
 void PerformAuditAndHighlight() {
@@ -1093,10 +1268,28 @@ void PerformAuditAndHighlight() {
 
     // 8. Browser Passwords
     bool passwordLocked = IsBrowserPasswordLocked();
-    g_hardRows[7].liveInfo = passwordLocked ? "Password saving is securely disabled." : "Password saving is currently allowed.";
-    g_hardRows[7].statusLabel = passwordLocked ? "Secured: Locked" : "Warning: Unlocked";
-    g_hardStates[7] = passwordLocked ? 2 : 1;
-    g_hardRows[7].actionLabel = passwordLocked ? "Unlock" : "Lock";
+    bool passwordsExistOnDisk = AreBrowserCredentialsPresent();
+
+    if (passwordLocked && !passwordsExistOnDisk) {
+        g_hardRows[7].liveInfo = "Policy locked and local password vaults are empty.";
+        g_hardRows[7].statusLabel = "Secured: Locked";
+        g_hardStates[7] = 2;
+        g_hardRows[7].actionLabel = "Unlock";
+    }
+    else if (passwordLocked && passwordsExistOnDisk) {
+        // The registry is locked, but the passwords were never purged!
+        g_hardRows[7].liveInfo = "Policy locked, but passwords STILL exist on disk!";
+        g_hardRows[7].statusLabel = "Warning: Data Exists";
+        g_hardStates[7] = 1;
+        g_hardRows[7].actionLabel = "Purge";
+    }
+    else {
+        g_hardRows[7].liveInfo = "Password saving allowed and data may exist.";
+        g_hardRows[7].statusLabel = "Warning: Unlocked";
+        g_hardStates[7] = 1;
+        g_hardRows[7].actionLabel = "Lock";
+    }
+
     SetWindowTextA(g_hardRows[7].hBtnAction, g_hardRows[7].actionLabel);
     ShowWindow(g_hardRows[7].hBtnAction, SW_SHOW);
 
@@ -1141,6 +1334,28 @@ void PerformAuditAndHighlight() {
     if (passwordLocked) g_secureCount++; else g_insecureCount++;
     if ((userCount == 0 || allUsersDisabled) && allPasswordsExpire) g_secureCount++; else g_insecureCount++;
     if (netSecHardened) g_secureCount++; else g_insecureCount++;
+
+
+    // 11. Unneeded Windows Features (Index 10)
+    bool unneededFeaturesActive = AreUnneededWindowsFeaturesEnabled();
+    if (unneededFeaturesActive) {
+        g_hardRows[10].liveInfo = "IIS, Telnet, or legacy SMB features are installed.";
+        g_hardRows[10].statusLabel = "Warning: Installed";
+        g_hardStates[10] = 1;
+        g_hardRows[10].actionLabel = "Disable";
+        SetWindowTextA(g_hardRows[10].hBtnAction, g_hardRows[10].actionLabel);
+        ShowWindow(g_hardRows[10].hBtnAction, SW_SHOW);
+    }
+    else {
+        g_hardRows[10].liveInfo = "Unused Windows features are securely disabled.";
+        g_hardRows[10].statusLabel = "Secured: Hardened";
+        g_hardStates[10] = 2;
+        ShowWindow(g_hardRows[10].hBtnAction, SW_HIDE); // Hide button so we don't accidentally re-install IIS
+    }
+
+    // --- Update your existing metric counters block ---
+    // [Keep your existing if statements, and add this new one at the end:]
+    if (!unneededFeaturesActive) g_secureCount++; else g_insecureCount++;
 }
 
 // --- WINDOW PROC ---
@@ -1169,7 +1384,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         int startY = 55;
         int rowHeight = 38;
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 11; i++) {
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
                 515, startY + 4, 70, 26, // Expanded position for more spacing
@@ -1213,7 +1428,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         // Inside WM_PAINT of WindowProc, replace the entire Render Hardening Rows section:
 
          // Draw a distinct background container for the controls area
-        RECT rcControlsBg = { 10, 10, 600, 55 + (10 * 38) + 10 };
+        RECT rcControlsBg = { 10, 10, 600, 55 + (11 * 38) + 10 };
         HBRUSH hControlBgBrush = CreateSolidBrush(RGB(15, 23, 42)); // Distinct container background
         FillRect(hdc, &rcControlsBg, hControlBgBrush);
         DeleteObject(hControlBgBrush);
@@ -1261,7 +1476,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         int startY = 55; // Shifted down for the title
         int rowHeight = 38;
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 11; i++) {
             RECT rcRow = { 15, startY, 590, startY + rowHeight };
 
             if (i % 2 == 1) {
@@ -1316,7 +1531,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
 
         if (wmId == ID_BTN_SECURE_ALL) {
-            if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to enforce all hardening policies?")) {
+            if (!ShowDarkConfirmDialog(hwnd, "Enforce All Hardening Policies", "Are you sure you want to enforce all hardening policies?")) {
                 return 0;
             }
             SetBluetoothDeviceState(false);
@@ -1329,15 +1544,27 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             ConfigureBrowserPasswordLock(true);
             ConfigureLocalUsers(true);
             ConfigureNetworkSecPolicies(true);
+            DisableUnneededWindowsFeatures();
             PerformAuditAndHighlight();
             UpdateStatus("All hardening policies enforced.");
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+			
         }
-        else if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 100) {
-            if (!ShowDarkConfirmDialog(hwnd, "Are you sure you want to change this security setting?")) {
-                return 0;
-            }
+        else if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 120) {
             int rowIdx = (wmId - ID_HARD_BASE) / 10;
+            bool isSecured = (g_hardStates[rowIdx] == 2);
+
+            if (isSecured) {
+               if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to revert this setting:")) {
+                    return 0; 
+                }
+            }
+            else {
+                // If it's unsecured, they are hardening it -> Standard Confirm Dialog
+                if (!ShowDarkConfirmDialog(hwnd, g_hardRows[rowIdx].name, "Are you sure you want to secure this setting?")) {
+                    return 0; // Cancelled
+                }
+            }
             switch (rowIdx) {
             case 0: SetBluetoothDeviceState(g_hardStates[0] ==2); break;
             case 1: SetWifiDeviceState(g_hardStates[1] ==2); break;
@@ -1352,6 +1579,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             case 7: ConfigureBrowserPasswordLock(g_hardStates[7] != 2); break;
             case 8: ConfigureLocalUsers(g_hardStates[8] != 2); break;
             case 9: ConfigureNetworkSecPolicies(g_hardStates[9] != 2); break;
+			case 10: DisableUnneededWindowsFeatures(); break;
             }
             PerformAuditAndHighlight();
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
@@ -1369,7 +1597,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return TRUE;
         }
         // 2. Draw the Row Action Buttons ("Secure", "Disable", "Enable")
-        else if (pdis->CtlID >= ID_HARD_BASE && pdis->CtlID < ID_HARD_BASE + 100) {
+        else if (pdis->CtlID >= ID_HARD_BASE && pdis->CtlID < ID_HARD_BASE + 120) {
             HDC hdc = pdis->hDC;
             bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
 

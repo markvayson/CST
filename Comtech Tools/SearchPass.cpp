@@ -62,7 +62,7 @@ bool g_bUpdatingCheckboxes = false;
 #define IDM_SEARCHPASS 106
 
 
-extern bool ShowDarkConfirmDialog(HWND hParent, const char* msg);
+extern bool ShowDarkConfirmDialog(HWND hParent, const char* title, const char* msg);
 extern void ShowDarkMessageDialog(HWND hParent, const char* msg);
 
 void UpdateDeleteButtonState(HWND hListView, HWND hBtn) {
@@ -107,7 +107,7 @@ void SearchDirectoryRecursive(const std::wstring& currentDir, const std::wstring
 
 
 void ExecutePermanentDelete(HWND hListView) {
-    if (!ShowDarkConfirmDialog(GetParent(hListView), "Are you sure you want to permanently delete the flagged files to meet ADHICS standards?")) {
+    if (!ShowDarkConfirmDialog(GetParent(hListView), "Permanently Delete Files", "Are you sure you want to permanently delete the flagged files to meet ADHICS standards?")) {
         return;
     }
 
@@ -480,7 +480,7 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             if (targetCount > 0) {
                 char msgBuffer[256];
                 snprintf(msgBuffer, 256, "Are you sure you want to permanently delete %d selected item(s)?", targetCount);
-                if (ShowDarkConfirmDialog(hwnd, msgBuffer)) {
+                if (ShowDarkConfirmDialog(hwnd, "Delete Files", msgBuffer)) {
                     int deleted = 0;
                     for (int i = itemCount - 1; i >= 0; --i) {
                         if (ListView_GetCheckState(hListView, i)) {
@@ -509,7 +509,7 @@ LRESULT CALLBACK SearchResultsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             }
         }
         else if (LOWORD(wParam) == IDC_BTN_ANYDESK) {
-            if (ShowDarkConfirmDialog(hwnd, "Are you sure you want to delete all AnyDesk.exe?")) {
+            if (ShowDarkConfirmDialog(hwnd, "Delete AnyDesk.exe", "Are you sure you want to delete all AnyDesk.exe?")) {
                 std::thread(ExecuteAnydeskRemoval, hwnd).detach();
             }
         }
