@@ -3,55 +3,137 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
-#include "Theme.h"
-
-#include "Inventory.h"
+#include <dwmapi.h>
 #include <time.h>
 #include <string>
 #include <vector>
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include "ConfirmDialog.h"
+#include "Theme.h"
+#include "Inventory.h"
 
+#include <comdef.h>
+#include <wbemidl.h>
 
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "dwmapi.lib")
 
-// --- CUSTOM DUAL INPUT BOX WNDPROC ---
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+// --- CUSTOM INPUT BOX STATE ---
 static std::string g_inputDept;
-static std::string g_inputOwner;
 static bool g_inputDone = false;
 static bool g_inputCancelled = false;
-static HWND hEditDept;
-static HWND hEditOwner;
+static HWND hEditDept = NULL;
+static HWND hLblError = NULL; // Error label handle
+
 
 static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static HBRUSH hEditBrush = NULL;
+
     switch (msg) {
+    case WM_CREATE: {
+        hEditBrush = CreateSolidBrush(COLOR_PANEL);
+        break;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdcStatic = (HDC)wParam;
+        HWND hCtl = (HWND)lParam;
+
+        if (hCtl == hLblError) {
+            SetTextColor(hdcStatic, RGB(248, 113, 113));
+            SetBkMode(hdcStatic, TRANSPARENT);
+            return (LRESULT)g_hBrushBg;
+        }
+
+        SetTextColor(hdcStatic, COLOR_TEXT_WHITE);
+        SetBkMode(hdcStatic, TRANSPARENT);
+        return (LRESULT)g_hBrushBg;
+    }
+    case WM_CTLCOLOREDIT: {
+        HDC hdcEdit = (HDC)wParam;
+        SetTextColor(hdcEdit, COLOR_TEXT_WHITE);
+        SetBkColor(hdcEdit, COLOR_PANEL);
+        return (LRESULT)hEditBrush;
+    }
+    case WM_DRAWITEM: {
+        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+        if (pdis->CtlID == 1) { // OK Button
+            HDC hdc = pdis->hDC;
+            bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
+
+            COLORREF bgCol = isPressed ? RGB(13, 45, 52) : COLOR_ACCENT_TEAL;
+            HBRUSH hBtnBrush = CreateSolidBrush(bgCol);
+            FillRect(hdc, &pdis->rcItem, hBtnBrush);
+            DeleteObject(hBtnBrush);
+
+            HPEN hPen = CreatePen(PS_SOLID, 1, COLOR_ACCENT_TEAL);
+            SelectObject(hdc, hPen);
+            SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
+            DeleteObject(hPen);
+
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, COLOR_TEXT_WHITE);
+            SelectObject(hdc, g_hFontBold);
+            DrawTextA(hdc, "OK", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            return TRUE;
+        }
+        break;
+    }
     case WM_COMMAND:
+        if (HIWORD(wParam) == EN_CHANGE && (HWND)lParam == hEditDept) {
+            if (hLblError && IsWindowVisible(hLblError)) {
+                ShowWindow(hLblError, SW_HIDE);
+            }
+        }
+
         if (LOWORD(wParam) == 1) { // OK Button
             char buf1[256] = { 0 };
-            char buf2[256] = { 0 };
             GetWindowTextA(hEditDept, buf1, sizeof(buf1));
-            GetWindowTextA(hEditOwner, buf2, sizeof(buf2));
 
-            // Check for empty inputs
-            if (strlen(buf1) == 0 || strlen(buf2) == 0) {
-                MessageBoxA(hwnd, "Please enter both Department and Asset Owner.", "Input Required", MB_OK | MB_ICONWARNING);
-                return 0; // Halt and wait for user
+            if (strlen(buf1) == 0) {
+                if (hLblError) ShowWindow(hLblError, SW_SHOW);
+                return 0;
             }
 
             g_inputDept = buf1;
-            g_inputOwner = buf2;
             g_inputDone = true;
             g_inputCancelled = false;
+            if (hEditBrush) { DeleteObject(hEditBrush); hEditBrush = NULL; }
+
+            // Freeze parent redraw BEFORE destroying to suppress OS flashing
+            HWND hParent = GetParent(hwnd);
+            if (hParent) {
+                SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            }
+
             DestroyWindow(hwnd);
         }
         break;
-    case WM_CLOSE: // User clicked the X button
+    case WM_CLOSE:
         g_inputDone = true;
         g_inputCancelled = true;
+        if (hEditBrush) { DeleteObject(hEditBrush); hEditBrush = NULL; }
+
+        // Freeze parent redraw BEFORE destroying
+        {
+            HWND hParent = GetParent(hwnd);
+            if (hParent) {
+                SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            }
+        }
+
         DestroyWindow(hwnd);
         break;
     default:
@@ -60,71 +142,73 @@ static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     return 0;
 }
 
-static bool AskUserDepartmentAndOwner(HWND hParent, std::string& outDept, std::string& outOwner) {
+static bool AskUserDepartment(HWND hParent, std::string& outDept) {
     g_inputDept = "";
-    g_inputOwner = "";
     g_inputDone = false;
-    g_inputCancelled = false; // Reset flag
+    g_inputCancelled = false;
 
-    // 1. Register the Window Class
     WNDCLASS wc = { 0 };
     wc.lpfnWndProc = InputBoxProc;
     wc.hInstance = GetModuleHandle(NULL);
     wc.lpszClassName = "CustomInputDialog";
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = g_hBrushBg;
     RegisterClass(&wc);
 
-    // 2. Create the Window
     HWND hInputWnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
         "CustomInputDialog", "Enter Inventory Details",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        0, 0, 320, 200, hParent, NULL, GetModuleHandle(NULL), NULL);
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        0, 0, 320, 175, hParent, NULL, GetModuleHandle(NULL), NULL);
 
-    // Center the window relative to parent
+    BOOL useDarkMode = TRUE;
+    ::DwmSetWindowAttribute(hInputWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
     if (hParent) {
         RECT rcParent; GetWindowRect(hParent, &rcParent);
         SetWindowPos(hInputWnd, NULL,
             rcParent.left + (rcParent.right - rcParent.left) / 2 - 160,
-            rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 100,
-            0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 87,
+            320, 175, SWP_NOZORDER);
     }
 
-    // 3. Create Controls (Labels, Textboxes, Button)
-    CreateWindowA("STATIC", "Department:", WS_VISIBLE | WS_CHILD, 20, 20, 100, 20, hInputWnd, NULL, NULL, NULL);
-    hEditDept = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, 120, 20, 150, 20, hInputWnd, NULL, NULL, NULL);
+    HWND hLblDept = CreateWindowA("STATIC", "Department:", WS_VISIBLE | WS_CHILD, 20, 25, 100, 20, hInputWnd, NULL, NULL, NULL);
+    SendMessageA(hLblDept, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    CreateWindowA("STATIC", "Asset Owner:", WS_VISIBLE | WS_CHILD, 20, 60, 100, 20, hInputWnd, NULL, NULL, NULL);
-    hEditOwner = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, 120, 60, 150, 20, hInputWnd, NULL, NULL, NULL);
+    hEditDept = CreateWindowExA(0, "EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL, 120, 23, 160, 24, hInputWnd, NULL, NULL, NULL);
+    SendMessageA(hEditDept, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 110, 110, 80, 30, hInputWnd, (HMENU)1, NULL, NULL);
+    hLblError = CreateWindowA("STATIC", "Please enter Department", WS_CHILD | SS_CENTER, 20, 60, 260, 18, hInputWnd, NULL, NULL, NULL);
+    SendMessageA(hLblError, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    // Disable parent to make it modal
+    CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 115, 88, 90, 32, hInputWnd, (HMENU)1, NULL, NULL);
+
     if (hParent) EnableWindow(hParent, FALSE);
 
-    // 4. Message Loop (Halts execution here until user clicks OK or Close)
+    ShowWindow(hInputWnd, SW_SHOW);
+
     MSG msg;
     while (!g_inputDone && GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
-    // Restore parent window
+    // Unfreeze and cleanly redraw parent after dialog is fully gone
     if (hParent) {
         EnableWindow(hParent, TRUE);
         SetForegroundWindow(hParent);
+        SendMessage(hParent, WM_SETREDRAW, TRUE, 0);
+        RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     }
 
-    // If user clicked X, abort
     if (g_inputCancelled) {
         return false;
     }
 
     outDept = g_inputDept;
-    outOwner = g_inputOwner;
     return true;
 }
 
-// Helper to read Registry Strings
+
+// --- HELPER FUNCTIONS ---
 std::string GetRegString(HKEY hKey, const std::string& subKey, const std::string& value) {
     DWORD dataSize = 0;
     if (RegGetValueA(hKey, subKey.c_str(), value.c_str(), RRF_RT_REG_SZ, nullptr, nullptr, &dataSize) != ERROR_SUCCESS) return "N/A";
@@ -136,7 +220,6 @@ std::string GetRegString(HKEY hKey, const std::string& subKey, const std::string
     return "N/A";
 }
 
-// Helper to read Registry DWORDs
 DWORD GetRegDword(HKEY hKey, const std::string& subKey, const std::string& value) {
     DWORD data = 0;
     DWORD dataSize = sizeof(data);
@@ -146,44 +229,100 @@ DWORD GetRegDword(HKEY hKey, const std::string& subKey, const std::string& value
     return 0;
 }
 
-// Helper to execute PowerShell silently using Windows API to prevent CMD window from popping up
 std::string GetSerialNumber() {
-    HANDLE hRead, hWrite;
-    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    sa.bInheritHandle = TRUE;
+    HRESULT hres = CoInitializeEx(0, COINIT_MULTITHREADED);
+    bool needUninit = (hres == S_OK);
 
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return "N/A";
+    IWbemLocator* pLoc = NULL;
+    hres = CoCreateInstance(
+        CLSID_WbemLocator,
+        0,
+        CLSCTX_INPROC_SERVER,
+        IID_IWbemLocator,
+        (LPVOID*)&pLoc
+    );
 
-    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-    si.wShowWindow = SW_HIDE; // Prevents the CMD window from popping up
-
-    PROCESS_INFORMATION pi;
-    char cmd[] = "powershell -NoProfile -Command \"(Get-CimInstance Win32_BIOS).SerialNumber\"";
-
-    if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        CloseHandle(hRead);
-        CloseHandle(hWrite);
+    if (FAILED(hres)) {
+        if (needUninit) CoUninitialize();
         return "N/A";
     }
-    CloseHandle(hWrite); // Close write end so ReadFile unblocks when process exits
 
-    std::string result = "";
-    char buffer[128];
-    DWORD bytesRead;
-    while (ReadFile(hRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        result += buffer;
+    IWbemServices* pSvc = NULL;
+    hres = pLoc->ConnectServer(
+        _bstr_t(L"ROOT\\CIMV2"),
+        NULL,
+        NULL,
+        0,
+        NULL,
+        0,
+        0,
+        &pSvc
+    );
+
+    if (FAILED(hres)) {
+        pLoc->Release();
+        if (needUninit) CoUninitialize();
+        return "N/A";
     }
 
-    CloseHandle(hRead);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+    hres = CoSetProxyBlanket(
+        pSvc,
+        RPC_C_AUTHN_WINNT,
+        RPC_C_AUTHZ_NONE,
+        NULL,
+        RPC_C_AUTHN_LEVEL_CALL,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        NULL,
+        EOAC_NONE
+    );
 
-    result.erase(result.find_last_not_of(" \n\r\t") + 1); // Trim whitespace
-    return result.empty() ? "N/A" : result;
+    IEnumWbemClassObject* pEnumerator = NULL;
+    hres = pSvc->ExecQuery(
+        bstr_t("WQL"),
+        bstr_t("SELECT SerialNumber FROM Win32_BIOS"),
+        WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+        NULL,
+        &pEnumerator
+    );
+
+    if (FAILED(hres)) {
+        pSvc->Release();
+        pLoc->Release();
+        if (needUninit) CoUninitialize();
+        return "N/A";
+    }
+
+    std::string serialNumber = "N/A";
+    IWbemClassObject* pclsObj = NULL;
+    ULONG uReturn = 0;
+
+    while (pEnumerator) {
+        HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+        if (0 == uReturn) {
+            break;
+        }
+
+        VARIANT vtProp;
+        hr = pclsObj->Get(L"SerialNumber", 0, &vtProp, 0, 0);
+        if (SUCCEEDED(hr) && vtProp.vt == VT_BSTR && vtProp.bstrVal != NULL) {
+            _bstr_t bstrVal(vtProp.bstrVal);
+            std::wstring wserial((wchar_t*)bstrVal);
+            serialNumber = std::string(wserial.begin(), wserial.end());
+        }
+        VariantClear(&vtProp);
+        pclsObj->Release();
+        break;
+    }
+
+    if (pEnumerator) pEnumerator->Release();
+    if (pSvc) pSvc->Release();
+    if (pLoc) pLoc->Release();
+    if (needUninit) CoUninitialize();
+
+    // Trim whitespace
+    serialNumber.erase(serialNumber.find_last_not_of(" \n\r\t") + 1);
+    serialNumber.erase(0, serialNumber.find_first_not_of(" \n\r\t"));
+    return serialNumber.empty() ? "N/A" : serialNumber;
 }
 
 struct SoftwareItem {
@@ -193,7 +332,6 @@ struct SoftwareItem {
     std::string installDate;
 };
 
-// Helper: Format CSV fields safely
 static std::string EscapeCsv(const std::string& input) {
     bool needsQuotes = false;
     std::string escaped = "";
@@ -248,7 +386,6 @@ static std::string ReadRegString(HKEY hKeyRoot, const char* subKey, const char* 
     return std::string(buffer);
 }
 
-// Scans Windows Uninstall registry keys for installed software
 static void ScanUninstallKey(HKEY hRootKey, const char* subKeyPath, std::vector<SoftwareItem>& outSoftware) {
     HKEY hUninstallKey;
     if (RegOpenKeyExA(hRootKey, subKeyPath, 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hUninstallKey) != ERROR_SUCCESS) {
@@ -266,7 +403,6 @@ static void ScanUninstallKey(HKEY hRootKey, const char* subKeyPath, std::vector<
             std::string fullAppPath = std::string(subKeyPath) + "\\" + subKeyName;
             if (RegOpenKeyExA(hRootKey, fullAppPath.c_str(), 0, KEY_READ, &hAppKey) == ERROR_SUCCESS) {
 
-                // Exclude SystemComponent == 1
                 DWORD sysComponent = 0;
                 DWORD dwSize = sizeof(DWORD);
                 if (RegQueryValueExA(hAppKey, "SystemComponent", NULL, NULL, (LPBYTE)&sysComponent, &dwSize) == ERROR_SUCCESS && sysComponent == 1) {
@@ -274,7 +410,6 @@ static void ScanUninstallKey(HKEY hRootKey, const char* subKeyPath, std::vector<
                     continue;
                 }
 
-                // Exclude items with ParentKeyName
                 char parentKey[256] = { 0 };
                 dwSize = sizeof(parentKey);
                 if (RegQueryValueExA(hAppKey, "ParentKeyName", NULL, NULL, (LPBYTE)parentKey, &dwSize) == ERROR_SUCCESS && strlen(parentKey) > 0) {
@@ -282,7 +417,6 @@ static void ScanUninstallKey(HKEY hRootKey, const char* subKeyPath, std::vector<
                     continue;
                 }
 
-                // Must have a DisplayName
                 char displayName[512] = { 0 };
                 dwSize = sizeof(displayName);
                 if (RegQueryValueExA(hAppKey, "DisplayName", NULL, NULL, (LPBYTE)displayName, &dwSize) == ERROR_SUCCESS && strlen(displayName) > 0) {
@@ -313,7 +447,6 @@ static void ScanUninstallKey(HKEY hRootKey, const char* subKeyPath, std::vector<
     RegCloseKey(hUninstallKey);
 }
 
-// Generates Software Inventory CSV files
 static int CollectSoftwareInventory(const std::string& hostname, const std::string& scanDate, const std::string& inventoryFolder) {
     std::vector<SoftwareItem> softwareList;
 
@@ -368,7 +501,6 @@ static int CollectSoftwareInventory(const std::string& hostname, const std::stri
     return (int)softwareList.size();
 }
 
-// Generates Asset / Hardware Inventory CSV files
 static bool CollectAssetInventory(const std::string& hostname, const std::string& scanDate, const std::string& inventoryFolder, const std::string& department, const std::string& assetOwner) {
     std::string assetFolder = inventoryFolder + "\\Asset Inventory";
     CreateDir(assetFolder);
@@ -378,7 +510,6 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
     std::string serial = GetSerialNumber();
     std::string cpu = ReadRegString(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString");
 
-    // Get Total RAM
     MEMORYSTATUSEX statex;
     statex.dwLength = sizeof(statex);
     double ramGb = 0.0;
@@ -386,12 +517,10 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
         ramGb = (double)statex.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
     }
 
-    // Query OS Details
     std::string osName = ReadRegString(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ProductName");
     std::string buildNum = ReadRegString(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "CurrentBuildNumber");
     std::string displayVer = ReadRegString(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "DisplayVersion");
 
-    // Fix osName if running Windows 11 but registering as Windows 10
     if (atoi(buildNum.c_str()) >= 22000) {
         size_t pos = osName.find("Windows 10");
         if (pos != std::string::npos) osName.replace(pos, 10, "Windows 11");
@@ -399,13 +528,11 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
 
     std::string softwareVersionStr = osName + " " + displayVer;
 
-    // Formatting Complete System Details uses osName instead of editionID, removed DeviceID, ProductID, and InstallDate
     char systemDetailsBuf[1024];
     snprintf(systemDetailsBuf, sizeof(systemDetailsBuf),
         "Device name: %s, Processor: %s, Installed RAM: %.2f GB, Windows Edition: %s, Windows Version: %s, OS Build: %s",
         hostname.c_str(), cpu.c_str(), ramGb, osName.c_str(), displayVer.c_str(), buildNum.c_str());
 
-    // Query active IP & MAC Addresses via IPHLPAPI
     std::string macAddresses = "";
     std::string ipAddresses = "";
 
@@ -425,7 +552,7 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
                 if (pCurrAddresses->OperStatus == IfOperStatusUp && pCurrAddresses->IfType != IF_TYPE_SOFTWARE_LOOPBACK) {
                     if (pCurrAddresses->PhysicalAddressLength > 0) {
                         char macBuf[64] = { 0 };
-                        snprintf(macBuf, sizeof(macBuf), "%02X-%02X-%02X-%02X-%02X-%02X",
+                        snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
                             pCurrAddresses->PhysicalAddress[0], pCurrAddresses->PhysicalAddress[1],
                             pCurrAddresses->PhysicalAddress[2], pCurrAddresses->PhysicalAddress[3],
                             pCurrAddresses->PhysicalAddress[4], pCurrAddresses->PhysicalAddress[5]);
@@ -504,16 +631,20 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
     return true;
 }
 
+
+// Declare external logging functions from CSCsecure.cpp
+extern void LogMessage(const std::string& msg);
+extern void UpdateStatus(const std::string& msg);
+
+// --- THREAD PROCEDURE ---
 static DWORD WINAPI InventoryThreadProc(LPVOID lpParam) {
     HWND hParent = (HWND)lpParam;
 
     std::string departmentInput;
-    std::string ownerInput;
 
-    if (!AskUserDepartmentAndOwner(hParent, departmentInput, ownerInput)) {
+    if (!AskUserDepartment(hParent, departmentInput)) {
         return 0;
     }
-
 
     char exePath[MAX_PATH] = { 0 };
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
@@ -532,15 +663,17 @@ static DWORD WINAPI InventoryThreadProc(LPVOID lpParam) {
     std::string scanDate = GetCurrentTimestamp();
 
     int swCount = CollectSoftwareInventory(hostname, scanDate, inventoryFolder);
-    bool assetSuccess = CollectAssetInventory(hostname, scanDate, inventoryFolder, departmentInput, ownerInput);
+    bool assetSuccess = CollectAssetInventory(hostname, scanDate, inventoryFolder, departmentInput, "");
 
     char msgBuf[512];
     if (swCount > 0 || assetSuccess) {
-        snprintf(msgBuf, sizeof(msgBuf), "Inventory collection completed successfully!\n\nApplications Logged: %d\nSaved in: \\Inventory Folder", swCount);
-        MessageBoxA(hParent, msgBuf, "CSCsecure Inventory", MB_OK | MB_ICONINFORMATION);
+        snprintf(msgBuf, sizeof(msgBuf), "Inventory collection completed successfully! Applications Logged: %d (Saved in \\Inventory Folder)", swCount);
+        UpdateStatus(msgBuf);
+        LogMessage(msgBuf);
     }
     else {
-        MessageBoxA(hParent, "Failed to complete inventory collection.", "Error", MB_OK | MB_ICONERROR);
+        UpdateStatus("Failed to complete inventory collection.");
+        LogMessage("Failed to complete inventory collection.");
     }
 
     return 0;

@@ -61,9 +61,15 @@ LRESULT CALLBACK ConfirmWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         if (LOWORD(wParam) == 2) { g_confirmResult = false; PostMessage(hwnd, WM_CLOSE, 0, 0); }
         break;
     }
-    case WM_CLOSE: {
-        EnableWindow(GetParent(hwnd), TRUE);
-        SetForegroundWindow(GetParent(hwnd));
+   case WM_CLOSE: {
+        HWND hParent = GetParent(hwnd);
+        if (hParent) {
+            SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            EnableWindow(hParent, TRUE);
+            SetForegroundWindow(hParent);
+            SendMessage(hParent, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
         DestroyWindow(hwnd);
         break;
     }
@@ -109,15 +115,14 @@ bool ShowDarkConfirmDialog(HWND hParent, const char* title, const char* msg) {
 }
 
 
-
 // --- Dark Message Box (OK Only) ---
 static std::string g_messageMsg = "";
 
 LRESULT CALLBACK MessageWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
-        // Centered OK button
-        CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 97, 90, 90, 30, hwnd, (HMENU)1, NULL, NULL);
+        // Position OK button at bottom center
+        CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 125, 120, 90, 30, hwnd, (HMENU)1, NULL, NULL);
         break;
     }
     case WM_PAINT: {
@@ -130,7 +135,8 @@ LRESULT CALLBACK MessageWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         SetTextColor(hdc, COLOR_TEXT_WHITE);
         SelectObject(hdc, g_hFontSub);
 
-        RECT textRc = { 15, 25, rc.right - 15, 75 };
+        // Increased height rect to fit 3-4 lines of text
+        RECT textRc = { 15, 15, rc.right - 15, 110 };
         DrawTextA(hdc, g_messageMsg.c_str(), -1, &textRc, DT_CENTER | DT_WORDBREAK);
 
         EndPaint(hwnd, &ps);
@@ -161,8 +167,14 @@ LRESULT CALLBACK MessageWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         break;
     }
     case WM_CLOSE: {
-        EnableWindow(GetParent(hwnd), TRUE);
-        SetForegroundWindow(GetParent(hwnd));
+        HWND hParent = GetParent(hwnd);
+        if (hParent) {
+            SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            EnableWindow(hParent, TRUE);
+            SetForegroundWindow(hParent);
+            SendMessage(hParent, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
         DestroyWindow(hwnd);
         break;
     }
@@ -170,7 +182,7 @@ LRESULT CALLBACK MessageWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
-void ShowDarkMessageDialog(HWND hParent, const char* msg) {
+void ShowDarkMessageDialog(HWND hParent, const char* title, const char* msg) {
     g_messageMsg = msg;
 
     WNDCLASS wc = { 0 };
@@ -180,16 +192,17 @@ void ShowDarkMessageDialog(HWND hParent, const char* msg) {
     wc.hbrBackground = g_hBrushBg;
     RegisterClass(&wc);
 
+    // Expanded window dimensions: 340x200
     HWND hMsgWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
-        "DarkMessageDialog", "Information",
+        "DarkMessageDialog", title,
         WS_POPUP | WS_BORDER | WS_CAPTION,
-        0, 0, 285, 170, hParent, NULL, GetModuleHandle(NULL), NULL);
+        0, 0, 340, 200, hParent, NULL, GetModuleHandle(NULL), NULL);
 
     RECT rcParent; GetWindowRect(hParent, &rcParent);
     SetWindowPos(hMsgWnd, NULL,
-        rcParent.left + (rcParent.right - rcParent.left) / 2 - 142,
-        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 85,
-        285, 170, SWP_NOZORDER);
+        rcParent.left + (rcParent.right - rcParent.left) / 2 - 170,
+        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 100,
+        340, 200, SWP_NOZORDER);
 
     BOOL useDarkMode = TRUE;
     ::DwmSetWindowAttribute(hMsgWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
@@ -203,8 +216,9 @@ void ShowDarkMessageDialog(HWND hParent, const char* msg) {
         DispatchMessage(&wmsg);
     }
 }
-
-
+void ShowDarkMessageDialog(HWND hParent, const char* msg) {
+    ShowDarkMessageDialog(hParent, "CSCsecure", msg);
+}
 static bool g_passResult = false;
 static std::string g_passMsg = "";
 static HWND g_hPassEdit = NULL;
@@ -283,8 +297,14 @@ LRESULT CALLBACK PasswordWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         break;
     }
     case WM_CLOSE: {
-        EnableWindow(GetParent(hwnd), TRUE);
-        SetForegroundWindow(GetParent(hwnd));
+        HWND hParent = GetParent(hwnd);
+        if (hParent) {
+            SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            EnableWindow(hParent, TRUE);
+            SetForegroundWindow(hParent);
+            SendMessage(hParent, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
         DestroyWindow(hwnd);
         break;
     }
