@@ -3,15 +3,13 @@
 #include "ConfirmDialog.h"
 #include <windows.h>
 #include <commctrl.h>
-#include <setupapi.h>
-#include <devguid.h>
 #include <userenv.h>
-#include <cfgmgr32.h>
 #include <winspool.h>
 #include <lm.h>
 #include <stdio.h>
 #include <time.h>
 #include <string>
+#include <shellapi.h>
 
 
 #include <vector>
@@ -27,10 +25,14 @@
 #include "SearchPass.h"
 #include "Theme.h"
 #include <thread>
+#include <functional>
 #include "Sidebar.h"
+#include "WindowsFeatures.h"
+#include "WifiAdapter.h"
+#include "Bluetooth.h"
+
 
 #pragma comment(lib, "d2d1.lib")
-#pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "winspool.lib")
@@ -86,15 +88,15 @@ std::string GetFileVersionValue(const char* valueName) {
 #define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
 #endif
 
-#ifndef DPC_ENABLE
-#define DPC_ENABLE 0x00000001
-#endif
 #ifndef DPC_DISABLE
 #define DPC_DISABLE 0x00000002
 #endif
 #ifndef DCPC_GLOBAL
 #define DCPC_GLOBAL 0x00000001
 #endif
+
+// DEBUG / TEMPORARY: Unsecure All Control ID
+#define ID_BTN_UNSECURE_ALL  1004
 
 template <class T> void SafeRelease(T** ppT) {
     if (*ppT) {
@@ -660,54 +662,7 @@ void UnshareAllFolders() {
     } while (res == ERROR_MORE_DATA);
 }
 
-bool IsBluetoothEnabled() {
-    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_BLUETOOTH, NULL, NULL, DIGCF_PRESENT);
-    if (hDevInfo == INVALID_HANDLE_VALUE) return false;
 
-    SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-    bool anyEnabled = false, foundRadio = false;
-
-    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
-        ULONG status = 0, problem = 0;
-        if (CM_Get_DevNode_Status(&status, &problem, devInfoData.DevInst, 0) == CR_SUCCESS) {
-            foundRadio = true;
-            if (problem != CM_PROB_DISABLED) {
-                anyEnabled = true;
-                break;
-            }
-        }
-    }
-    SetupDiDestroyDeviceInfoList(hDevInfo);
-    return foundRadio ? anyEnabled : false;
-}
-
-bool IsWifiAdapterEnabled() {
-    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT);
-    if (hDevInfo == INVALID_HANDLE_VALUE) return false;
-
-    SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-    bool foundPhysicalWifi = false, wifiEnabled = false;
-
-    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
-        char friendlyName[256] = { 0 };
-        if (SetupDiGetDeviceRegistryPropertyA(hDevInfo, &devInfoData, SPDRP_FRIENDLYNAME, NULL, (PBYTE)friendlyName, sizeof(friendlyName), NULL)) {
-            if ((strstr(friendlyName, "Wi-Fi") || strstr(friendlyName, "Wireless") || strstr(friendlyName, "WLAN") || strstr(friendlyName, "802.11")) &&
-                !strstr(friendlyName, "Virtual") && !strstr(friendlyName, "Direct") && !strstr(friendlyName, "Hosted")) {
-
-                foundPhysicalWifi = true;
-                ULONG status = 0, problem = 0;
-                if (CM_Get_DevNode_Status(&status, &problem, devInfoData.DevInst, 0) == CR_SUCCESS) {
-                    if (problem != CM_PROB_DISABLED) {
-                        wifiEnabled = true;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    SetupDiDestroyDeviceInfoList(hDevInfo);
-    return foundPhysicalWifi ? wifiEnabled : false;
-}
 
 void SecureDeleteFile(const std::wstring& filePath) {
     if (GetFileAttributesW(filePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -938,51 +893,8 @@ void ConfigureBrowserPasswordLock(bool lockPasswords) {
     }
     }
 
-    void SetBluetoothDeviceState(bool enable) {
-        HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_BLUETOOTH, NULL, NULL, DIGCF_PRESENT);
-        if (hDevInfo != INVALID_HANDLE_VALUE) {
-            SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-            for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
-                SP_PROPCHANGE_PARAMS pcp;
-                pcp.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
-                pcp.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
-                pcp.StateChange = enable ? DPC_ENABLE : DPC_DISABLE;
-                pcp.Scope = DCPC_GLOBAL;
-                pcp.HwProfile = 0;
 
-                if (SetupDiSetClassInstallParams(hDevInfo, &devInfoData, &pcp.ClassInstallHeader, sizeof(pcp))) {
-                    SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, hDevInfo, &devInfoData);
-                }
-            }
-            SetupDiDestroyDeviceInfoList(hDevInfo);
-        }
-    }
-void SetWifiDeviceState(bool enable) {
-    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT);
-    if (hDevInfo != INVALID_HANDLE_VALUE) {
-        SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-        for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
-            char friendlyName[256] = { 0 };
-            if (SetupDiGetDeviceRegistryPropertyA(hDevInfo, &devInfoData, SPDRP_FRIENDLYNAME, NULL, (PBYTE)friendlyName, sizeof(friendlyName), NULL)) {
-                if ((strstr(friendlyName, "Wi-Fi") || strstr(friendlyName, "Wireless") || strstr(friendlyName, "WLAN") || strstr(friendlyName, "802.11")) &&
-                    !strstr(friendlyName, "Virtual") && !strstr(friendlyName, "Direct") && !strstr(friendlyName, "Hosted")) {
 
-                    SP_PROPCHANGE_PARAMS pcp;
-                    pcp.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
-                    pcp.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
-                    pcp.StateChange = enable ? DPC_ENABLE : DPC_DISABLE;
-                    pcp.Scope = DCPC_GLOBAL;
-                    pcp.HwProfile = 0;
-
-                    if (SetupDiSetClassInstallParams(hDevInfo, &devInfoData, &pcp.ClassInstallHeader, sizeof(pcp))) {
-                        SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, hDevInfo, &devInfoData);
-                    }
-                }
-            }
-        }
-        SetupDiDestroyDeviceInfoList(hDevInfo);
-    }
-}
 
 bool RestartWin32Service(const char* serviceName) {
     SC_HANDLE hSCM = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
@@ -1084,66 +996,7 @@ bool AreBrowserCredentialsPresent() {
     return foundData;
 }
 
-bool AreUnneededWindowsFeaturesEnabled() {
-    // 1. Check IIS Web Server (Registry Key exists if installed)
-    bool iisEnabled = false;
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\InetStp", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        iisEnabled = true;
-        RegCloseKey(hKey);
-    }
 
-    // 2. Check IIS Hostable Web Core (DLL exists if installed)
-    bool hwcEnabled = (GetFileAttributesW(L"C:\\Windows\\System32\\inetsrv\\hwebcore.dll") != INVALID_FILE_ATTRIBUTES);
-
-    // 3. Check SMB 1.0 Feature (Service start type)
-    bool smb1Enabled = false;
-    DWORD startVal = 4;
-    DWORD dwSize = sizeof(DWORD);
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\mrxsmb10", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExA(hKey, "Start", NULL, NULL, (LPBYTE)&startVal, &dwSize) == ERROR_SUCCESS) {
-            if (startVal < 4) smb1Enabled = true;
-        }
-        RegCloseKey(hKey);
-    }
-
-    // 4. Check SMB Direct Feature (Service start type)
-    bool smbDirectEnabled = false;
-    startVal = 4;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\smbdirect", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExA(hKey, "Start", NULL, NULL, (LPBYTE)&startVal, &dwSize) == ERROR_SUCCESS) {
-            if (startVal < 4) smbDirectEnabled = true;
-        }
-        RegCloseKey(hKey);
-    }
-
-    // 5. Check Telnet Client/Server (Executable exists if installed)
-    bool telnetEnabled = (GetFileAttributesW(L"C:\\Windows\\System32\\telnet.exe") != INVALID_FILE_ATTRIBUTES);
-
-    return (iisEnabled || hwcEnabled || smb1Enabled || smbDirectEnabled || telnetEnabled);
-}
-
-void DisableUnneededWindowsFeatures() {
-    UpdateStatus("Disabling unused Windows features (This may take a few moments)...");
-
-    // Use DISM to cleanly uninstall the features from the OS image
-    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:IIS-WebServerRole /Quiet /NoRestart");
-    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:IIS-HostableWebCore /Quiet /NoRestart");
-    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:SMB1Protocol /Quiet /NoRestart");
-    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:SmbDirect /Quiet /NoRestart");
-    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:TelnetClient /Quiet /NoRestart");
-    RunSilentCmd("DISM /Online /Disable-Feature /FeatureName:TelnetServer /Quiet /NoRestart"); // Catch server OS variants
-
-    // Fallback: Ensure services are killed in the registry just in case DISM skips
-    HKEY hKey;
-    DWORD disabled = 4;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\smbdirect", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "Start", 0, REG_DWORD, (const BYTE*)&disabled, sizeof(disabled));
-        RegCloseKey(hKey);
-    }
-
-    UpdateStatus("Unused Windows features completely disabled.");
-}
 
 void PerformAuditAndHighlight() {
     g_secureCount = 0;
@@ -1153,7 +1006,7 @@ void PerformAuditAndHighlight() {
     // 1. Bluetooth
     bool btActive = IsBluetoothEnabled();
     g_hardRows[0].liveInfo = btActive ? "Bluetooth is currently enabled." : "Bluetooth adapter is securely disabled.";
-    g_hardRows[0].statusLabel = btActive ? "Warning: Enabled" : "Secured: Disabled";
+    g_hardRows[0].statusLabel = btActive ? "Warning" : "Secured";
     g_hardStates[0] = btActive ? 1 : 2;
     g_hardRows[0].actionLabel = btActive ? "Disable" : "Enable";
     SetWindowTextA(g_hardRows[0].hBtnAction, g_hardRows[0].actionLabel);
@@ -1162,7 +1015,7 @@ void PerformAuditAndHighlight() {
     // 2. Wi-Fi
     bool wifiActive = IsWifiAdapterEnabled();
     g_hardRows[1].liveInfo = wifiActive ? "Wi-Fi is currently enabled." : "Wi-Fi adapter is securely disabled.";
-    g_hardRows[1].statusLabel = wifiActive ? "Warning: Enabled" : "Secured: Disabled";
+    g_hardRows[1].statusLabel = wifiActive ? "Warning" : "Secured";
     g_hardStates[1] = wifiActive ? 1 : 2;
     g_hardRows[1].actionLabel = wifiActive ? "Disable" : "Enable";
     SetWindowTextA(g_hardRows[1].hBtnAction, g_hardRows[1].actionLabel);
@@ -1171,7 +1024,7 @@ void PerformAuditAndHighlight() {
     // 3. SMB Server Protocols
     bool smbHardened = IsSMBv1Disabled();
     g_hardRows[2].liveInfo = smbHardened ? "SMBv1 protocol is securely disabled." : "SMBv1 protocol is currently enabled.";
-    g_hardRows[2].statusLabel = smbHardened ? "Secured: Disabled" : "Warning: Enabled";
+    g_hardRows[2].statusLabel = smbHardened ? "Secured" : "Warning";
     g_hardStates[2] = smbHardened ? 2 : 1;
     g_hardRows[2].actionLabel = smbHardened ? "Enable" : "Secure";
     SetWindowTextA(g_hardRows[2].hBtnAction, g_hardRows[2].actionLabel);
@@ -1201,7 +1054,7 @@ void PerformAuditAndHighlight() {
         else {
             g_hardRows[3].liveInfo = "Spooler remote RPC connections are allowed.";
         }
-        g_hardRows[3].statusLabel = "Warning: Unsecured";
+        g_hardRows[3].statusLabel = "Warning";
         g_hardStates[3] = 1;
         g_hardRows[3].actionLabel = "Secure";
         SetWindowTextA(g_hardRows[3].hBtnAction, g_hardRows[3].actionLabel);
@@ -1209,7 +1062,7 @@ void PerformAuditAndHighlight() {
     }
     else {
         g_hardRows[3].liveInfo = "No shares & RPC client connections blocked.";
-        g_hardRows[3].statusLabel = "Secured: Hardened";
+        g_hardRows[3].statusLabel = "Secured";
         g_hardStates[3] = 2;
         g_hardRows[3].actionLabel = "Revert";
         SetWindowTextA(g_hardRows[3].hBtnAction, g_hardRows[3].actionLabel);
@@ -1235,7 +1088,7 @@ void PerformAuditAndHighlight() {
             snprintf(buf, sizeof(buf), "Multiple (%d) shared network folders detected.", (int)sharedFolders.size());
             g_hardRows[4].liveInfo = buf;
         }
-        g_hardRows[4].statusLabel = "Warning: Shared";
+        g_hardRows[4].statusLabel = "Warning";
         g_hardStates[4] = 1;
         g_hardRows[4].actionLabel = "Secure";
         SetWindowTextA(g_hardRows[4].hBtnAction, g_hardRows[4].actionLabel);
@@ -1243,7 +1096,7 @@ void PerformAuditAndHighlight() {
     }
     else {
         g_hardRows[4].liveInfo = "No shared network folders detected.";
-        g_hardRows[4].statusLabel = "Secured: No Shares";
+        g_hardRows[4].statusLabel = "Secured";
         g_hardStates[4] = 2;
         ShowWindow(g_hardRows[4].hBtnAction, SW_HIDE);
     }
@@ -1251,7 +1104,7 @@ void PerformAuditAndHighlight() {
     // 6. SSL / TLS
     bool sslTlsHardened = IsSslTlsHardened();
     g_hardRows[5].liveInfo = sslTlsHardened ? "Best practice IIS Crypto settings applied." : "Unsecured TLS/SSL ciphers are active.";
-    g_hardRows[5].statusLabel = sslTlsHardened ? "Secured: Hardened" : "Warning: Unsecured";
+    g_hardRows[5].statusLabel = sslTlsHardened ? "Secured" : "Warning";
     g_hardStates[5] = sslTlsHardened ? 2 : 1;
     g_hardRows[5].actionLabel = sslTlsHardened ? "Revert" : "Secure";
     SetWindowTextA(g_hardRows[5].hBtnAction, g_hardRows[5].actionLabel);
@@ -1260,7 +1113,7 @@ void PerformAuditAndHighlight() {
     // 7. Browser Login
     bool browserLocked = IsBrowserAccountLocked();
     g_hardRows[6].liveInfo = browserLocked ? "Browser sign-in is securely disabled." : "Browser sign-in is currently allowed.";
-    g_hardRows[6].statusLabel = browserLocked ? "Secured: Locked" : "Warning: Unlocked";
+    g_hardRows[6].statusLabel = browserLocked ? "Secured" : "Warning";
     g_hardStates[6] = browserLocked ? 2 : 1;
     g_hardRows[6].actionLabel = browserLocked ? "Unlock" : "Lock";
     SetWindowTextA(g_hardRows[6].hBtnAction, g_hardRows[6].actionLabel);
@@ -1272,20 +1125,20 @@ void PerformAuditAndHighlight() {
 
     if (passwordLocked && !passwordsExistOnDisk) {
         g_hardRows[7].liveInfo = "Policy locked and local password vaults are empty.";
-        g_hardRows[7].statusLabel = "Secured: Locked";
+        g_hardRows[7].statusLabel = "Secured";
         g_hardStates[7] = 2;
         g_hardRows[7].actionLabel = "Unlock";
     }
     else if (passwordLocked && passwordsExistOnDisk) {
         // The registry is locked, but the passwords were never purged!
         g_hardRows[7].liveInfo = "Policy locked, but passwords STILL exist on disk!";
-        g_hardRows[7].statusLabel = "Warning: Data Exists";
+        g_hardRows[7].statusLabel = "Warning";
         g_hardStates[7] = 1;
         g_hardRows[7].actionLabel = "Purge";
     }
     else {
         g_hardRows[7].liveInfo = "Password saving allowed and data may exist.";
-        g_hardRows[7].statusLabel = "Warning: Unlocked";
+        g_hardRows[7].statusLabel = "Warning";
         g_hardStates[7] = 1;
         g_hardRows[7].actionLabel = "Lock";
     }
@@ -1301,14 +1154,14 @@ void PerformAuditAndHighlight() {
     g_hardRows[8].liveInfo = GetLocalUserAccountsInfo(userCount, allUsersDisabled, allPasswordsExpire);
 
     if ((userCount > 0 && !allUsersDisabled) || !allPasswordsExpire) {
-        g_hardRows[8].statusLabel = "Warning: Action Needed";
+        g_hardRows[8].statusLabel = "Warning";
         g_hardStates[8] = 1;
         g_hardRows[8].actionLabel = "Secure";
         SetWindowTextA(g_hardRows[8].hBtnAction, g_hardRows[8].actionLabel);
         ShowWindow(g_hardRows[8].hBtnAction, SW_SHOW);
     }
     else {
-        g_hardRows[8].statusLabel = "Secured: Hardened";
+        g_hardRows[8].statusLabel = "Secured";
         g_hardStates[8] = 2;
         g_hardRows[8].actionLabel = "Enable";
         SetWindowTextA(g_hardRows[8].hBtnAction, g_hardRows[8].actionLabel);
@@ -1318,7 +1171,7 @@ void PerformAuditAndHighlight() {
     // 10. Network Security Policies 
     bool netSecHardened = IsNetworkSecPoliciesHardened();
     g_hardRows[9].liveInfo = netSecHardened ? "NTLMv2 & SMB Signing strictly enforced." : "Legacy NTLM or unsigned SMB allowed.";
-    g_hardRows[9].statusLabel = netSecHardened ? "Secured: Hardened" : "Warning: Unsecured";
+    g_hardRows[9].statusLabel = netSecHardened ? "Secured" : "Warning";
     g_hardStates[9] = netSecHardened ? 2 : 1;
     g_hardRows[9].actionLabel = netSecHardened ? "Revert" : "Secure";
     SetWindowTextA(g_hardRows[9].hBtnAction, g_hardRows[9].actionLabel);
@@ -1340,7 +1193,7 @@ void PerformAuditAndHighlight() {
     bool unneededFeaturesActive = AreUnneededWindowsFeaturesEnabled();
     if (unneededFeaturesActive) {
         g_hardRows[10].liveInfo = "IIS, Telnet, or legacy SMB features are installed.";
-        g_hardRows[10].statusLabel = "Warning: Installed";
+        g_hardRows[10].statusLabel = "Warning";
         g_hardStates[10] = 1;
         g_hardRows[10].actionLabel = "Disable";
         SetWindowTextA(g_hardRows[10].hBtnAction, g_hardRows[10].actionLabel);
@@ -1348,9 +1201,12 @@ void PerformAuditAndHighlight() {
     }
     else {
         g_hardRows[10].liveInfo = "Unused Windows features are securely disabled.";
-        g_hardRows[10].statusLabel = "Secured: Hardened";
+        g_hardRows[10].statusLabel = "Secured";
         g_hardStates[10] = 2;
-        ShowWindow(g_hardRows[10].hBtnAction, SW_HIDE); // Hide button so we don't accidentally re-install IIS
+        g_hardRows[10].actionLabel = "Open";
+        SetWindowTextA(g_hardRows[10].hBtnAction, g_hardRows[10].actionLabel);
+        ShowWindow(g_hardRows[10].hBtnAction, SW_SHOW);
+        
     }
 
     // --- Update your existing metric counters block ---
@@ -1454,14 +1310,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdc, hMemBitmap);
 
         FillRect(hdc, &rcClient, g_hBrushBg);
-
         SetBkMode(hdc, TRANSPARENT);
 
-        // Inside WM_PAINT of WindowProc, replace the entire Render Hardening Rows section:
-
-         // Draw a distinct background container for the controls area
+        // Draw a distinct background container for the controls area
         RECT rcControlsBg = { 10, 10, 600, 55 + (11 * 38) + 10 };
-        HBRUSH hControlBgBrush = CreateSolidBrush(RGB(15, 23, 42)); // Distinct container background
+        HBRUSH hControlBgBrush = CreateSolidBrush(RGB(15, 23, 42));
         FillRect(hdc, &rcControlsBg, hControlBgBrush);
         DeleteObject(hControlBgBrush);
 
@@ -1471,12 +1324,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         RECT rcTitle = { 15, 18, 290, 48 };
         DrawTextA(hdc, "System Hardening Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-
         // Calculate metrics
         int percentMet = (g_totalControls > 0) ? (g_secureCount * 100 / g_totalControls) : 0;
 
         // Draw Progress Bar Background
-        RECT rcProgBg = {290, 28,545, 38 }; // Positioned right of the title
+        RECT rcProgBg = { 290, 28, 545, 38 };
         HBRUSH hProgBgBrush = CreateSolidBrush(RGB(30, 41, 59));
         FillRect(hdc, &rcProgBg, hProgBgBrush);
         DeleteObject(hProgBgBrush);
@@ -1486,9 +1338,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             RECT rcProgFill = rcProgBg;
             rcProgFill.right = rcProgBg.left + ((rcProgBg.right - rcProgBg.left) * percentMet / 100);
 
-            // Color shifts based on security level (Red -> Teal)
             COLORREF barColor = (percentMet == 100) ? RGB(13, 148, 136) : RGB(96, 165, 250);
-            if (percentMet < 50) barColor = RGB(248, 113, 113); // Red if poor
+            if (percentMet < 50) barColor = RGB(248, 113, 113);
 
             HBRUSH hProgFillBrush = CreateSolidBrush(barColor);
             FillRect(hdc, &rcProgFill, hProgFillBrush);
@@ -1500,19 +1351,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SetTextColor(hdc, COLOR_TEXT_WHITE);
         char progText[32];
         snprintf(progText, sizeof(progText), "%d%%", percentMet);
-        RECT rcProgText = { 555, 20,595, 45 };
+        RECT rcProgText = { 555, 20, 595, 45 };
         DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-
         // Render Hardening Rows
-        int startY = 55; // Shifted down for the title
+        int startY = 55;
         int rowHeight = 38;
 
         for (int i = 0; i < 11; i++) {
             RECT rcRow = { 15, startY, 590, startY + rowHeight };
 
             if (i % 2 == 1) {
-                // Alternating row colors inside the container
                 HBRUSH hAltBrush = CreateSolidBrush(RGB(23, 32, 51));
                 FillRect(hdc, &rcRow, hAltBrush);
                 DeleteObject(hAltBrush);
@@ -1529,14 +1378,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetTextColor(hdc, COLOR_TEXT_WHITE);
             RECT rcName = { 45, startY + 2, 310, startY + 20 };
             DrawTextA(hdc, g_hardRows[i].name, -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
             // Live Info
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, RGB(148, 163, 184));
             RECT rcInfo = { 45, startY + 18, 300, startY + 36 };
             DrawTextA(hdc, g_hardRows[i].liveInfo.c_str(), -1, &rcInfo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-            // Status Label
-            COLORREF statusColor = (g_hardStates[i] == 2) ? RGB(96, 165, 250) : RGB(248, 113, 113);
+            // Dynamic Status Label Color
+            COLORREF statusColor;
+            if (g_hardRows[i].statusLabel == "Checking...") {
+                statusColor = RGB(251, 191, 36);
+            }
+            else if (g_hardStates[i] == 2) {
+                statusColor = RGB(96, 165, 250);
+            }
+            else {
+                statusColor = RGB(248, 113, 113);
+            }
+
+            // Draw Status Label
             SetTextColor(hdc, statusColor);
             RECT rcStatus = { 275, startY + 10, 505, startY + 28 };
             DrawTextA(hdc, g_hardRows[i].statusLabel.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -1561,60 +1422,118 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (HandleSidebarCommand(hwnd, wmId)) {
             return 0; // The sidebar handled it, we can stop here
         }
-
         if (wmId == ID_BTN_SECURE_ALL) {
+            if (g_isExecuting) return 0;
+
             if (!ShowDarkConfirmDialog(hwnd, "Enforce All Hardening Policies", "Are you sure you want to enforce all hardening policies?")) {
-                return 0;
+                return 0; // User canceled
             }
-            SetBluetoothDeviceState(false);
-            SetWifiDeviceState(false);
-            ConfigureSMB(true);
-            OnLockdownPrintersButtonClicked();
-            UnshareAllFolders();
-            ConfigureSslTlsIISCrypto(true);
-            ConfigureBrowserAccountLock(true);
-            ConfigureBrowserPasswordLock(true);
-            ConfigureLocalUsers(true);
-            ConfigureNetworkSecPolicies(true);
-            DisableUnneededWindowsFeatures();
-            PerformAuditAndHighlight();
-            UpdateStatus("All hardening policies enforced.");
-            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-			
+
+            g_isExecuting = true;
+            UpdateStatus("Enforcing hardening policies sequentially... Please wait.");
+
+            // Disable all row buttons during batch execution to prevent duplicate clicks
+            for (int i = 0; i < 11; i++) {
+                if (g_hardRows[i].hBtnAction) {
+                    EnableWindow(g_hardRows[i].hBtnAction, FALSE);
+                }
+            }
+
+            std::thread([hwnd]() {
+                // Helper lambda to mark a SINGLE row as "Checking...", run its action, then update the UI
+                auto RunTaskWithChecking = [hwnd](int rowIdx, const char* taskName, std::function<void()> actionFunc) {
+                    // 1. If this row was previously counted as Secured, decrement count temporarily
+                    if (g_hardStates[rowIdx] == 2) {
+                        if (g_secureCount > 0) g_secureCount--;
+                    }
+
+                    // 2. Mark this row state as In-Progress (1) and set label to "Checking..."
+                    g_hardStates[rowIdx] = 1;
+                    g_hardRows[rowIdx].statusLabel = "Checking...";
+                    g_hardRows[rowIdx].liveInfo = "Applying policy...";
+
+                    // Force redraw so progress bar AND label drop/update immediately
+                    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+
+                    // 3. Run the actual hardening action
+                    actionFunc();
+
+                    // 4. Perform full audit to recalculate g_secureCount and set proper status (Secured/Warning)
+                    PerformAuditAndHighlight();
+                    UpdateStatus(std::string(taskName) + " completed.");
+
+                    // Redraw window to bump the progress bar up and set "Secured"
+                    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                    };
+
+                // Execute row by row sequentially
+                RunTaskWithChecking(0, "Bluetooth Adapter", []() { SetBluetoothDeviceState(false); });
+                RunTaskWithChecking(1, "Wi-Fi Adapter", []() { SetWifiDeviceState(false); });
+                RunTaskWithChecking(2, "SMB Protocols", []() { ConfigureSMB(true); });
+                RunTaskWithChecking(3, "Shared Printers", []() { OnLockdownPrintersButtonClicked(); });
+                RunTaskWithChecking(4, "Shared Folders", []() { UnshareAllFolders(); });
+                RunTaskWithChecking(5, "SSL/TLS Ciphers", []() { ConfigureSslTlsIISCrypto(true); });
+                RunTaskWithChecking(6, "Browser Accounts", []() { ConfigureBrowserAccountLock(true); });
+                RunTaskWithChecking(7, "Browser Passwords", []() { ConfigureBrowserPasswordLock(true); });
+                RunTaskWithChecking(8, "Local Users", []() { ConfigureLocalUsers(true); });
+                RunTaskWithChecking(9, "Network Security Policies", []() { ConfigureNetworkSecPolicies(true); });
+                RunTaskWithChecking(10, "Unneeded Windows Features", []() { DisableUnneededWindowsFeaturesNative(); });
+
+                // Re-enable row action buttons when all tasks finish
+                for (int i = 0; i < 11; i++) {
+                    if (g_hardRows[i].hBtnAction) {
+                        EnableWindow(g_hardRows[i].hBtnAction, TRUE);
+                    }
+                }
+
+                UpdateStatus("All hardening policies enforced successfully.");
+                g_isExecuting = false;
+                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                }).detach();
         }
+
         else if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 120) {
             int rowIdx = (wmId - ID_HARD_BASE) / 10;
             bool isSecured = (g_hardStates[rowIdx] == 2);
+
+            if (rowIdx == 10 && isSecured) {
+                ShellExecuteA(hwnd, "open", "optionalfeatures.exe", NULL, NULL, SW_SHOWNORMAL);
+                return 0;
+            }
 
             if (isSecured) {
                if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to revert this setting:")) {
                     return 0; 
                 }
             }
-            else {
-                // If it's unsecured, they are hardening it -> Standard Confirm Dialog
-                if (!ShowDarkConfirmDialog(hwnd, g_hardRows[rowIdx].name, "Are you sure you want to secure this setting?")) {
-                    return 0; // Cancelled
-                }
-            }
-            switch (rowIdx) {
-            case 0: SetBluetoothDeviceState(g_hardStates[0] ==2); break;
-            case 1: SetWifiDeviceState(g_hardStates[1] ==2); break;
-            case 2: ConfigureSMB(g_hardStates[2] != 2); break;
-            case 3:
-                if (g_hardStates[3] != 2) OnLockdownPrintersButtonClicked();
-                else OnRevertPrintersButtonClicked();
-                break;
-            case 4: UnshareAllFolders(); break;
-            case 5: ConfigureSslTlsIISCrypto(g_hardStates[5] != 2); break;
-            case 6: ConfigureBrowserAccountLock(g_hardStates[6] != 2); break;
-            case 7: ConfigureBrowserPasswordLock(g_hardStates[7] != 2); break;
-            case 8: ConfigureLocalUsers(g_hardStates[8] != 2); break;
-            case 9: ConfigureNetworkSecPolicies(g_hardStates[9] != 2); break;
-			case 10: DisableUnneededWindowsFeatures(); break;
-            }
-            PerformAuditAndHighlight();
+            g_hardRows[rowIdx].statusLabel = "Checking...";
+            g_hardRows[rowIdx].liveInfo = "Applying changes and auditing status...";
+
+            EnableWindow(g_hardRows[rowIdx].hBtnAction, FALSE);
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            std::thread([hwnd, rowIdx]() {
+                switch (rowIdx) {
+                case 0: HandleBluetoothToggle(hwnd);  break;
+                case 1: SetWifiDeviceState(g_hardStates[1] == 2); break;
+                case 2: ConfigureSMB(g_hardStates[2] != 2); break;
+                case 3:
+                    if (g_hardStates[3] != 2) OnLockdownPrintersButtonClicked();
+                    else OnRevertPrintersButtonClicked();
+                    break;
+                case 4: UnshareAllFolders(); break;
+                case 5: ConfigureSslTlsIISCrypto(g_hardStates[5] != 2); break;
+                case 6: ConfigureBrowserAccountLock(g_hardStates[6] != 2); break;
+                case 7: ConfigureBrowserPasswordLock(g_hardStates[7] != 2); break;
+                case 8: ConfigureLocalUsers(g_hardStates[8] != 2); break;
+                case 9: ConfigureNetworkSecPolicies(g_hardStates[9] != 2); break;
+                case 10: DisableUnneededWindowsFeaturesNative(); break;
+                }
+
+                // Re-audit and refresh UI on main thread completion
+                PerformAuditAndHighlight();
+                EnableWindow(g_hardRows[rowIdx].hBtnAction, TRUE);
+                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                }).detach();
         }
         break;
     }

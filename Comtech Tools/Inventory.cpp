@@ -16,7 +16,8 @@
 
 #include <comdef.h>
 #include <wbemidl.h>
-
+#include <commctrl.h>
+#pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
@@ -36,6 +37,18 @@ static bool g_inputDone = false;
 static bool g_inputCancelled = false;
 static HWND hEditDept = NULL;
 static HWND hLblError = NULL; // Error label handle
+
+static LRESULT CALLBACK DeptEditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
+        // Trigger the OK button action (ID = 1) on parent window
+        HWND hParent = GetParent(hWnd);
+        if (hParent) {
+            SendMessage(hParent, WM_COMMAND, MAKEWPARAM(1, BN_CLICKED), (LPARAM)GetDlgItem(hParent, 1));
+        }
+        return 0; // Prevent default system chime sound
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
 
 
 static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -173,8 +186,12 @@ static bool AskUserDepartment(HWND hParent, std::string& outDept) {
     HWND hLblDept = CreateWindowA("STATIC", "Department:", WS_VISIBLE | WS_CHILD, 20, 25, 100, 20, hInputWnd, NULL, NULL, NULL);
     SendMessageA(hLblDept, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    hEditDept = CreateWindowExA(0, "EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL, 120, 23, 160, 24, hInputWnd, NULL, NULL, NULL);
+    // Assign explicit control ID (3) matching Password Dialog pattern
+    hEditDept = CreateWindowExA(0, "EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL, 120, 23, 160, 24, hInputWnd, (HMENU)3, NULL, NULL);
     SendMessageA(hEditDept, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
+
+    // Subclass edit control to handle 'Enter' key
+    SetWindowSubclass(hEditDept, DeptEditSubclassProc, 0, 0);
 
     hLblError = CreateWindowA("STATIC", "Please enter Department", WS_CHILD | SS_CENTER, 20, 60, 260, 18, hInputWnd, NULL, NULL, NULL);
     SendMessageA(hLblError, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
@@ -184,6 +201,9 @@ static bool AskUserDepartment(HWND hParent, std::string& outDept) {
     if (hParent) EnableWindow(hParent, FALSE);
 
     ShowWindow(hInputWnd, SW_SHOW);
+
+    // Focus immediately on input field when window opens
+    SetFocus(hEditDept);
 
     MSG msg;
     while (!g_inputDone && GetMessage(&msg, NULL, 0, 0)) {

@@ -78,6 +78,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(WindowsSDK_IncludePath);C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\SDKs\DISM\API\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -100,6 +101,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(WindowsSDK_IncludePath);C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\SDKs\DISM\API\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -118,6 +120,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(WindowsSDK_IncludePath);C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\SDKs\DISM\API\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -142,6 +145,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories>$(WindowsSDK_IncludePath);C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\SDKs\DISM\API\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -156,8 +160,10 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Bluetooth.h" />
     <ClInclude Include="ConfirmDialog.h" />
     <ClInclude Include="CSCsecure.h" />
+    <ClInclude Include="DismApi.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Inventory.h" />
     <ClInclude Include="Resource.h" />
@@ -166,14 +172,19 @@
     <ClInclude Include="targetver.h" />
     <ClInclude Include="Theme.h" />
     <ClInclude Include="version.h" />
+    <ClInclude Include="WifiAdapter.h" />
+    <ClInclude Include="WindowsFeatures.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Bluetooth.cpp" />
     <ClCompile Include="ConfirmDialog.cpp" />
     <ClCompile Include="CSCsecure.cpp" />
     <ClCompile Include="Inventory.cpp" />
     <ClCompile Include="SearchPass.cpp" />
     <ClCompile Include="Sidebar.cpp" />
     <ClCompile Include="Theme.cpp" />
+    <ClCompile Include="WifiAdapter.cpp" />
+    <ClCompile Include="WindowsFeatures.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="CSCsecure.rc" />

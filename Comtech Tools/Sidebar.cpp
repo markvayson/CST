@@ -1,4 +1,14 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+
+#pragma comment(lib, "IPHLPAPI.lib")
+#pragma comment(lib, "Ws2_32.lib")
+
 #include "Sidebar.h"
 #include "SearchPass.h"
 #include <thread>
@@ -11,21 +21,67 @@
 #include <string>
 
 // Control & Menu IDs
-#define ID_BTN_SECURE_ALL 1003
-#define IDM_INVENTORY     3005
-#define IDM_SEARCHPASS    3003
-#define IDM_WINUPDATE     3004
-#define ID_BTN_RESTART    3006
+#define ID_BTN_SECURE_ALL  1003
+#define IDM_INVENTORY      3005
+#define IDM_SEARCHPASS     3003
+#define IDM_WINUPDATE      3004
+#define ID_BTN_RESTART     3006
 #define ID_SIDEBAR_SYSINFO 3010
-
+#define ID_SIDEBAR_IPINFO  3011
 
 HWND g_hBtnSearchPass = NULL;
+
+// Helper function to get local IP address
+std::string GetLocalIPAddress() {
+    ULONG flags = GAA_FLAG_INCLUDE_PREFIX;
+    ULONG outBufLen = 15000;
+    PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+
+    if (pAddresses == NULL) return "N/A";
+
+    DWORD dwRetVal = GetAdaptersAddresses(AF_INET, flags, NULL, pAddresses, &outBufLen);
+    if (dwRetVal == ERROR_BUFFER_OVERFLOW) {
+        free(pAddresses);
+        pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+        dwRetVal = GetAdaptersAddresses(AF_INET, flags, NULL, pAddresses, &outBufLen);
+    }
+
+    std::string ipStr = "N/A";
+
+    if (dwRetVal == NO_ERROR && pAddresses != NULL) {
+        for (PIP_ADAPTER_ADDRESSES pCurrAddresses = pAddresses; pCurrAddresses != NULL; pCurrAddresses = pCurrAddresses->Next) {
+            // Skip loopback and down interfaces
+            if (pCurrAddresses->IfType == IF_TYPE_SOFTWARE_LOOPBACK || pCurrAddresses->OperStatus != IfOperStatusUp)
+                continue;
+
+            // FIXED: Using PIP_ADAPTER_UNICAST_ADDRESS instead of PIP_ADAPTER_UNICODE_ADDRESS
+            for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurrAddresses->FirstUnicastAddress; pUnicast != NULL; pUnicast = pUnicast->Next) {
+                if (pUnicast->Address.lpSockaddr != NULL && pUnicast->Address.lpSockaddr->sa_family == AF_INET) {
+                    sockaddr_in* sa_in = (sockaddr_in*)pUnicast->Address.lpSockaddr;
+                    char ipBuffer[INET_ADDRSTRLEN] = { 0 };
+                    inet_ntop(AF_INET, &(sa_in->sin_addr), ipBuffer, sizeof(ipBuffer));
+                    ipStr = ipBuffer;
+                    break;
+                }
+            }
+            if (ipStr != "N/A") break;
+        }
+    }
+
+    if (pAddresses) free(pAddresses);
+    return ipStr;
+}
+
 
 bool HandleSidebarCommand(HWND hwnd, int wmId) {
     switch (wmId) {
     case IDM_INVENTORY:
         // Triggers the dual-input dialog and launches InventoryThreadProc
         RunInventoryCollection(hwnd);
+        return true;
+
+    case ID_SIDEBAR_IPINFO:
+        ShellExecuteA(hwnd, "open", "control.exe", "ncpa.cpl", NULL, SW_SHOW);
         return true;
 
 
@@ -141,6 +197,7 @@ void CreateSidebarControls(HWND hwndParent) {
     int bottomMargin = 20;
     int restartY = rcClient.bottom - btnHeight - bottomMargin;
 
+    // Retrieve Host and OS Info
     char hostName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
     DWORD size = sizeof(hostName);
     GetComputerNameA(hostName, &size);
@@ -155,7 +212,6 @@ void CreateSidebarControls(HWND hwndParent) {
         bufSize = sizeof(osVer);
         RegQueryValueExA(hKey, "DisplayVersion", NULL, NULL, (LPBYTE)osVer, &bufSize);
 
-        // Correct the Windows 11 registry bug
         char buildBuf[64] = { 0 };
         bufSize = sizeof(buildBuf);
         if (RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)buildBuf, &bufSize) == ERROR_SUCCESS) {
@@ -174,19 +230,30 @@ void CreateSidebarControls(HWND hwndParent) {
     char sysInfoFull[256];
     snprintf(sysInfoFull, sizeof(sysInfoFull), "Host|%s\nOS|%s\nVersion|%s", hostName, osName, osVer);
 
-    int sysInfoHeight = 115;
-    int sysInfoY = restartY - sysInfoHeight - spacing;
+    // IP Address button height and Y calculation
+    int ipBtnHeight = 40;
+    int ipY = restartY - ipBtnHeight - spacing;
 
+    // SysInfo Panel Y calculation
+    int sysInfoHeight = 115;
+    int sysInfoY = ipY - sysInfoHeight - spacing;
+
+    // 1. System Info Panel
     HWND hSysInfoPanel = CreateWindowA("BUTTON", sysInfoFull, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sysInfoY, btnWidth, sysInfoHeight, hwndParent, (HMENU)(UINT_PTR)ID_SIDEBAR_SYSINFO, NULL, NULL);
     SetWindowSubclass(hSysInfoPanel, SidebarBtnSubclassProc, 1, 0);
-    
 
-  
+    // 2. IP Address Control (between SysInfo and Restart)
+    std::string ipAddr = GetLocalIPAddress();
+    std::string ipLabel = "IP: " + ipAddr;
+    HWND hIpBtn = CreateWindowA("BUTTON", ipLabel.c_str(), WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+        sidebarX, ipY, btnWidth, ipBtnHeight, hwndParent, (HMENU)(UINT_PTR)ID_SIDEBAR_IPINFO, NULL, NULL);
+    SetWindowSubclass(hIpBtn, SidebarBtnSubclassProc, 1, 0);
+
+    // 3. Restart Button
     HWND hBtnRestart = CreateWindowA("BUTTON", "Restart Device", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, restartY, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_RESTART, NULL, NULL);
     SetWindowSubclass(hBtnRestart, SidebarBtnSubclassProc, 1, 0);
-
 
 }
 
@@ -196,7 +263,8 @@ bool IsSidebarButton(UINT ctlId) {
         ctlId == IDM_SEARCHPASS ||
         ctlId == IDM_WINUPDATE ||
         ctlId == ID_BTN_RESTART ||
-        ctlId == ID_SIDEBAR_SYSINFO);
+        ctlId == ID_SIDEBAR_SYSINFO ||
+        ctlId == ID_SIDEBAR_IPINFO);
 }
 
 
@@ -362,6 +430,7 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     else if (ctlId == IDM_INVENTORY) icon = L'\xE9F9';
     else if (ctlId == IDM_SEARCHPASS) icon = L'\xE192';
     else if (ctlId == IDM_WINUPDATE) icon = L'\xE895';
+    else if (ctlId == ID_SIDEBAR_IPINFO) icon = L'\xE839';
     else if (ctlId == ID_BTN_RESTART) icon = L'\xE7E8';
 
     SetTextColor(hdc, textColor);
