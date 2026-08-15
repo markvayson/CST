@@ -7,7 +7,7 @@ extern std::string g_appVersion;
 
 // 1. Define your version numbers here. Update ONLY these four values.
 #define CSC_VERSION_MAJOR 4
-#define CSC_VERSION_MINOR 4
+#define CSC_VERSION_MINOR 5
 #define CSC_VERSION_BUILD 0
 #define CSC_VERSION_REVISION 0
 

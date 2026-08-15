@@ -161,30 +161,48 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Bluetooth.h" />
+    <ClInclude Include="BrowserAccount.h" />
+    <ClInclude Include="BrowserPassword.h" />
     <ClInclude Include="ConfirmDialog.h" />
     <ClInclude Include="CSCsecure.h" />
     <ClInclude Include="DismApi.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="IISCrypto.h" />
     <ClInclude Include="Inventory.h" />
+    <ClInclude Include="LocalAccounts.h" />
+    <ClInclude Include="NetworkSecPolicies.h" />
+    <ClInclude Include="NetworkPrinters.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="SearchPass.h" />
+    <ClInclude Include="SharedFolders.h" />
     <ClInclude Include="Sidebar.h" />
+    <ClInclude Include="SmbProtocol.h" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="Theme.h" />
     <ClInclude Include="version.h" />
     <ClInclude Include="WifiAdapter.h" />
     <ClInclude Include="WindowsFeatures.h" />
+    <ClInclude Include="WinRARUtils.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Bluetooth.cpp" />
+    <ClCompile Include="BrowserAccount.cpp" />
+    <ClCompile Include="BrowserPassword.cpp" />
     <ClCompile Include="ConfirmDialog.cpp" />
     <ClCompile Include="CSCsecure.cpp" />
+    <ClCompile Include="IISCrypto.cpp" />
     <ClCompile Include="Inventory.cpp" />
+    <ClCompile Include="LocalAccounts.cpp" />
+    <ClCompile Include="NetworkPrinters.cpp" />
+    <ClCompile Include="NetworkSecPolicies.cpp" />
     <ClCompile Include="SearchPass.cpp" />
+    <ClCompile Include="SharedFolders.cpp" />
     <ClCompile Include="Sidebar.cpp" />
+    <ClCompile Include="SmbProtocol.cpp" />
     <ClCompile Include="Theme.cpp" />
     <ClCompile Include="WifiAdapter.cpp" />
     <ClCompile Include="WindowsFeatures.cpp" />
+    <ClCompile Include="WinRARUtils.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="CSCsecure.rc" />

@@ -30,6 +30,15 @@
 #include "WindowsFeatures.h"
 #include "WifiAdapter.h"
 #include "Bluetooth.h"
+#include "SmbProtocol.h"
+#include "NetworkPrinters.h"
+#include "SharedFolders.h"
+#include "IISCrypto.h"
+#include "BrowserAccount.h"
+#include "BrowserPassword.h"
+#include "LocalAccounts.h"
+#include "NetworkSecPolicies.h"
+#include "WinRARUtils.h"
 
 
 #pragma comment(lib, "d2d1.lib")
@@ -136,12 +145,12 @@ std::vector<std::string> g_logMemory;
 
 
 // Metric Counts 
-int g_totalControls = 11;
+int g_totalControls = 12;
 int g_secureCount = 0;
 int g_attentionCount = 0;
 int g_insecureCount = 0;
 
-int g_hardStates[11] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2 };
+int g_hardStates[12] = { 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2 };
 
 
 struct HardeningRow {
@@ -153,8 +162,7 @@ struct HardeningRow {
     HWND hBtnAction;
 };
 
-// Row Definitions with Segoe MDL2 Icon Codes
-HardeningRow g_hardRows[11] = {
+HardeningRow g_hardRows[12] = {
     {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL},
     {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL},
     {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL},
@@ -165,14 +173,11 @@ HardeningRow g_hardRows[11] = {
     {"Browser Password Lock & Removal", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL},
     {"Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL},
     {"Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL},
-    {"Legacy & Unused Windows Features", "Auditing...", "Auditing...", "Disable", L'\xE74C', NULL} // New Control
+    {"Legacy & Unused Windows Features", "Auditing...", "Auditing...", "Disable", L'\xE74C', NULL},
+    {"WinRAR Archiver", "Auditing...", "Auditing...", "Install", L'\xE8B5', NULL} // <-- ADD THIS
 };
 
-struct PrinterStatus {
-    std::string name;
-    std::string shareName;
-    bool isShared = false;
-};
+
 
 std::vector<PrinterStatus> g_printerList;
 
@@ -193,206 +198,7 @@ void LoadVersionInfoFromResource() {
 
 
 
-bool IsNetworkSecPoliciesHardened() {
-    HKEY hKey;
-    DWORD dwSize = sizeof(DWORD);
-    DWORD lmCompat = 0, serverReq = 0, clientReq = 0;
-    DWORD restrictAnon = 0, restrictSam = 0, ldapSigning = 0;
 
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Lsa", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "LmCompatibilityLevel", NULL, NULL, (LPBYTE)&lmCompat, &dwSize);
-        RegQueryValueExA(hKey, "RestrictAnonymous", NULL, NULL, (LPBYTE)&restrictAnon, &dwSize);
-        RegQueryValueExA(hKey, "RestrictAnonymousSAM", NULL, NULL, (LPBYTE)&restrictSam, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "RequireSecuritySignature", NULL, NULL, (LPBYTE)&serverReq, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "RequireSecuritySignature", NULL, NULL, (LPBYTE)&clientReq, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LDAP", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "LDAPClientIntegrity", NULL, NULL, (LPBYTE)&ldapSigning, &dwSize);
-        RegCloseKey(hKey);
-    }
-
-    return (lmCompat == 5 && serverReq == 1 && clientReq == 1 &&
-        restrictAnon >= 1 && restrictSam >= 1 && ldapSigning >= 2);
-}
-
-void ConfigureNetworkSecPolicies(bool harden) {
-    HKEY hKey;
-    DWORD lmCompat = harden ? 5 : 0;
-    DWORD sigEnabled = harden ? 1 : 0;
-    DWORD sigRequired = harden ? 1 : 0;
-    DWORD restrictVal = harden ? 1 : 0;
-    DWORD ldapVal = harden ? 2 : 0;
-
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Lsa", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "LmCompatibilityLevel", 0, REG_DWORD, (const BYTE*)&lmCompat, sizeof(lmCompat));
-        RegSetValueExA(hKey, "RestrictAnonymous", 0, REG_DWORD, (const BYTE*)&restrictVal, sizeof(restrictVal));
-        RegSetValueExA(hKey, "RestrictAnonymousSAM", 0, REG_DWORD, (const BYTE*)&restrictVal, sizeof(restrictVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "EnableSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigEnabled, sizeof(sigEnabled));
-        RegSetValueExA(hKey, "RequireSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigRequired, sizeof(sigRequired));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "EnableSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigEnabled, sizeof(sigEnabled));
-        RegSetValueExA(hKey, "RequireSecuritySignature", 0, REG_DWORD, (const BYTE*)&sigRequired, sizeof(sigRequired));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LDAP", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "LDAPClientIntegrity", 0, REG_DWORD, (const BYTE*)&ldapVal, sizeof(ldapVal));
-        RegCloseKey(hKey);
-    }
-}
-
-std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bool& outAllPasswordsExpire) {
-    DWORD dwRead = 0, dwTotal = 0, dwResume = 0;
-    PUSER_INFO_1 pBuf = NULL;
-    NET_API_STATUS nStatus = NetUserEnum(NULL, 1, FILTER_NORMAL_ACCOUNT, (LPBYTE*)&pBuf, MAX_PREFERRED_LENGTH, &dwRead, &dwTotal, &dwResume);
-
-    outUserCount = 0;
-    outAllDisabled = true;
-    outAllPasswordsExpire = true;
-    std::vector<std::string> activeUsers;
-
-    if (nStatus == NERR_Success && pBuf != NULL) {
-        for (DWORD i = 0; i < dwRead; i++) {
-            std::wstring wUserName = pBuf[i].usri1_name;
-            std::string userName(wUserName.begin(), wUserName.end());
-
-            if (_stricmp(userName.c_str(), "Mark") == 0) continue;
-
-            outUserCount++;
-
-            if ((pBuf[i].usri1_flags & UF_ACCOUNTDISABLE) == 0) {
-                outAllDisabled = false;
-                activeUsers.push_back(userName);
-            }
-            if (pBuf[i].usri1_flags & UF_DONT_EXPIRE_PASSWD) {
-                outAllPasswordsExpire = false;
-            }
-        }
-        NetApiBufferFree(pBuf);
-    }
-
-    if (outUserCount == 0) return "No local user accounts detected.";
-
-    std::string baseMsg;
-    if (outAllDisabled) {
-        baseMsg = "Non-essential user accounts are disabled.";
-    }
-    else if (activeUsers.size() == 1) {
-        baseMsg = activeUsers[0] + " account is currently active.";
-    }
-    else {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "%s and %d other accounts are active.", activeUsers[0].c_str(), (int)(activeUsers.size() - 1));
-        baseMsg = std::string(buf);
-    }
-
-    if (!outAllPasswordsExpire) {
-        if (outAllDisabled) return "Accounts disabled, but 'Password never expires' is enabled.";
-        return baseMsg + " (Pass never expires is ticked).";
-    }
-    return baseMsg;
-}
-
-void ConfigureLocalUsers(bool disableAccounts) {
-    DWORD dwRead = 0, dwTotal = 0, dwResume = 0;
-    PUSER_INFO_1 pBuf = NULL;
-    NET_API_STATUS nStatus = NetUserEnum(NULL, 1, FILTER_NORMAL_ACCOUNT, (LPBYTE*)&pBuf, MAX_PREFERRED_LENGTH, &dwRead, &dwTotal, &dwResume);
-
-    if (nStatus == NERR_Success && pBuf != NULL) {
-        for (DWORD i = 0; i < dwRead; i++) {
-            std::wstring wUserName = pBuf[i].usri1_name;
-            std::string userName(wUserName.begin(), wUserName.end());
-
-            if (_stricmp(userName.c_str(), "Mark") == 0) continue;
-
-            USER_INFO_1008 ui1008;
-            DWORD dwParmErr = 0;
-
-            ui1008.usri1008_flags = pBuf[i].usri1_flags;
-            if (disableAccounts) {
-                ui1008.usri1008_flags |= UF_ACCOUNTDISABLE;
-                ui1008.usri1008_flags &= ~UF_DONT_EXPIRE_PASSWD;
-            }
-            else {
-                ui1008.usri1008_flags &= ~UF_ACCOUNTDISABLE;
-            }
-            NetUserSetInfo(NULL, wUserName.c_str(), 1008, (LPBYTE)&ui1008, &dwParmErr);
-        }
-        NetApiBufferFree(pBuf);
-    }
-}
-
-bool ExtractResourceToFile(int resourceID, const std::wstring& outputPath) {
-    HMODULE hModule = GetModuleHandle(NULL);
-    HRSRC hRes = FindResource(hModule, MAKEINTRESOURCE(resourceID), RT_RCDATA);
-    if (!hRes) return false;
-
-    HGLOBAL hMem = LoadResource(hModule, hRes);
-    if (!hMem) return false;
-
-    DWORD fileSize = SizeofResource(hModule, hRes);
-    LPVOID pData = LockResource(hMem);
-    if (!pData || fileSize == 0) return false;
-
-    HANDLE hFile = CreateFileW(outputPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return false;
-
-    DWORD bytesWritten = 0;
-    WriteFile(hFile, pData, fileSize, &bytesWritten, NULL);
-    CloseHandle(hFile);
-
-    return true;
-}
-
-bool RunEmbeddedIISCrypto(bool useCustomTemplate) {
-    wchar_t tempPath[MAX_PATH];
-    GetTempPathW(MAX_PATH, tempPath);
-
-    std::wstring exePath = std::wstring(tempPath) + L"IISCryptoCli_Temp.exe";
-    std::wstring tplPath = std::wstring(tempPath) + L"CustomHardening.ictpl";
-
-    if (!ExtractResourceToFile(IDR_IISCRYPTOCLI, exePath)) return false;
-
-    std::wstring commandLine = L"\"" + exePath + L"\" ";
-    if (useCustomTemplate) {
-        if (!ExtractResourceToFile(IDR_CUSTOMTEMPLATE, tplPath)) {
-            DeleteFileW(exePath.c_str());
-            return false;
-        }
-        commandLine += L"/template \"" + tplPath + L"\"";
-    }
-    else {
-        commandLine += L"/template default";
-    }
-
-    STARTUPINFOW si = { sizeof(si) };
-    PROCESS_INFORMATION pi = { 0 };
-    BOOL success = CreateProcessW(NULL, &commandLine[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-
-    if (success) {
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-
-    DeleteFileW(exePath.c_str());
-    if (useCustomTemplate) {
-        DeleteFileW(tplPath.c_str());
-    }
-
-    return success;
-}
 
 void LogMessage(const std::string& msg) {
     time_t rawtime;
@@ -474,424 +280,13 @@ void ShowLogWindow(HWND hParent) {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 700, 450, hParent, NULL, GetModuleHandle(NULL), NULL);
 }
 
-void RunSilentCmd(const char* cmd) {
-    STARTUPINFOA si = { sizeof(si) };
-    PROCESS_INFORMATION pi;
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-
-    char fullCmd[1024];
-    snprintf(fullCmd, sizeof(fullCmd), "cmd.exe /c %s", cmd);
-
-    if (CreateProcessA(NULL, fullCmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        while (WaitForSingleObject(pi.hProcess, 50) == WAIT_TIMEOUT) {
-            MSG msg;
-            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-        }
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-}
-
-std::vector<PrinterStatus> GetSystemPrintersInfo() {
-    std::vector<PrinterStatus> printerList;
-    DWORD cbNeeded = 0, cReturned = 0;
-
-    EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, NULL, 0, &cbNeeded, &cReturned);
-    if (cbNeeded == 0) return printerList;
-
-    std::vector<BYTE> buffer(cbNeeded);
-    if (EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, buffer.data(), cbNeeded, &cbNeeded, &cReturned)) {
-        PRINTER_INFO_2A* pPrinterInfo = reinterpret_cast<PRINTER_INFO_2A*>(buffer.data());
-
-        for (DWORD i = 0; i < cReturned; i++) {
-            PrinterStatus status;
-            status.name = pPrinterInfo[i].pPrinterName ? pPrinterInfo[i].pPrinterName : "Unknown Printer";
-            status.isShared = (pPrinterInfo[i].Attributes & PRINTER_ATTRIBUTE_SHARED) != 0;
-            status.shareName = (status.isShared && pPrinterInfo[i].pShareName) ? pPrinterInfo[i].pShareName : "";
-            printerList.push_back(status);
-        }
-    }
-    return printerList;
-}
-
-void SetSpoolerClientConnectionsPolicy(bool disableConnections) {
-    HKEY hKey;
-    LPCWSTR subKey = L"Software\\Policies\\Microsoft\\Windows NT\\Printers";
-
-    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
-
-    if (status == ERROR_SUCCESS) {
-        if (disableConnections) {
-            DWORD value = 2;
-            RegSetValueExW(hKey, L"RegisterSpoolerRemoteRpcEndPoint", 0, REG_DWORD, (const BYTE*)&value, sizeof(value));
-            LogMessage("Policy 'Allow Print Spooler to accept client connections' set to Disabled.");
-        }
-        else {
-            RegDeleteValueW(hKey, L"RegisterSpoolerRemoteRpcEndPoint");
-            LogMessage("Policy 'Allow Print Spooler to accept client connections' reverted to Not Configured.");
-        }
-        RegCloseKey(hKey);
-    }
-    else {
-        LogMessage("Failed to open or create registry key for Printer policies. Run as Administrator.");
-        return;
-    }
-
-    LogMessage("Refreshing machine policy natively...");
-    RefreshPolicyEx(TRUE, RP_FORCE);
-
-    LogMessage("Restarting Print Spooler service natively...");
-    if (RestartWin32Service("Spooler")) {
-        LogMessage("Spooler client connection policy applied successfully.");
-    }
-    else {
-        LogMessage("Failed to restart Spooler service natively.");
-    }
-}
-
-void OnLockdownPrintersButtonClicked() {
-    UnshareAllPrinters();
-    SetSpoolerClientConnectionsPolicy(true);
-}
-
-void OnRevertPrintersButtonClicked() {
-    SetSpoolerClientConnectionsPolicy(false);
-}
-
-void UnshareAllPrinters() {
-    DWORD cbNeeded = 0, cReturned = 0;
-    EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, NULL, 0, &cbNeeded, &cReturned);
-    if (cbNeeded == 0) return;
-
-    std::vector<BYTE> buffer(cbNeeded);
-    if (EnumPrintersA(PRINTER_ENUM_LOCAL, NULL, 2, buffer.data(), cbNeeded, &cbNeeded, &cReturned)) {
-        PRINTER_INFO_2A* pPrinterInfo = reinterpret_cast<PRINTER_INFO_2A*>(buffer.data());
-
-        for (DWORD i = 0; i < cReturned; i++) {
-            if (pPrinterInfo[i].Attributes & PRINTER_ATTRIBUTE_SHARED) {
-                HANDLE hPrinter = NULL;
-                PRINTER_DEFAULTSA pd = { NULL, NULL, PRINTER_ACCESS_ADMINISTER };
-
-                if (OpenPrinterA(pPrinterInfo[i].pPrinterName, &hPrinter, &pd)) {
-                    pPrinterInfo[i].Attributes &= ~PRINTER_ATTRIBUTE_SHARED;
-                    pPrinterInfo[i].pDevMode = NULL;
-                    pPrinterInfo[i].pSecurityDescriptor = NULL;
-
-                    if (!SetPrinterA(hPrinter, 2, (LPBYTE)&pPrinterInfo[i], 0)) {
-                        DWORD err = GetLastError();
-                        LogMessage("Failed to unshare printer: " + std::string(pPrinterInfo[i].pPrinterName) + " Error code: " + std::to_string(err));
-                    }
-                    else {
-                        LogMessage("Successfully unshared printer: " + std::string(pPrinterInfo[i].pPrinterName));
-                    }
-                    ClosePrinter(hPrinter);
-                }
-                else {
-                    DWORD err = GetLastError();
-                    LogMessage("Failed to open printer: " + std::string(pPrinterInfo[i].pPrinterName) + " Error code: " + std::to_string(err));
-                }
-            }
-        }
-    }
-}
-
-bool GetSystemSharedFoldersInfo(std::string& outShareNames) {
-    PSHARE_INFO_1 pBuf = NULL, pTmpBuf = NULL;
-    DWORD entriesRead = 0, totalEntries = 0, resumeHandle = 0;
-    NET_API_STATUS res;
-    bool foundUserShare = false;
-    outShareNames = "";
-
-    do {
-        res = NetShareEnum(NULL, 1, (LPBYTE*)&pBuf, MAX_PREFERRED_LENGTH, &entriesRead, &totalEntries, &resumeHandle);
-        if (res == ERROR_SUCCESS || res == ERROR_MORE_DATA) {
-            pTmpBuf = pBuf;
-            for (DWORD i = 0; i < entriesRead; i++) {
-                if ((pTmpBuf->shi1_type & STYPE_MASK) == STYPE_DISKTREE) {
-                    std::wstring wShareName = pTmpBuf->shi1_netname;
-                    if (!wShareName.empty() && wShareName.back() != L'$') {
-                        foundUserShare = true;
-                        char nameA[256] = { 0 };
-                        WideCharToMultiByte(CP_ACP, 0, wShareName.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
-                        if (!outShareNames.empty()) outShareNames += ", ";
-                        outShareNames += nameA;
-                    }
-                }
-                pTmpBuf++;
-            }
-            NetApiBufferFree(pBuf);
-        }
-    } while (res == ERROR_MORE_DATA);
-    return foundUserShare;
-}
-
-void UnshareAllFolders() {
-    PSHARE_INFO_1 pBuf = NULL, pTmpBuf = NULL;
-    DWORD entriesRead = 0, totalEntries = 0, resumeHandle = 0;
-    NET_API_STATUS res;
-
-    do {
-        res = NetShareEnum(NULL, 1, (LPBYTE*)&pBuf, MAX_PREFERRED_LENGTH, &entriesRead, &totalEntries, &resumeHandle);
-        if (res == ERROR_SUCCESS || res == ERROR_MORE_DATA) {
-            pTmpBuf = pBuf;
-            for (DWORD i = 0; i < entriesRead; i++) {
-                if ((pTmpBuf->shi1_type & STYPE_MASK) == STYPE_DISKTREE) {
-                    std::wstring wShareName = pTmpBuf->shi1_netname;
-                    if (!wShareName.empty() && wShareName.back() != L'$') {
-                        DWORD delRes = NetShareDel(NULL, (LMSTR)wShareName.c_str(), 0);
-
-                        char nameA[256] = { 0 };
-                        WideCharToMultiByte(CP_ACP, 0, wShareName.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
-
-                        if (delRes == NERR_Success) {
-                            LogMessage("Successfully unshared folder: " + std::string(nameA));
-                        }
-                        else {
-                            LogMessage("Failed to unshare folder: " + std::string(nameA) + " Error code: " + std::to_string(delRes));
-                        }
-                    }
-                }
-                pTmpBuf++;
-            }
-            NetApiBufferFree(pBuf);
-        }
-    } while (res == ERROR_MORE_DATA);
-}
 
 
 
-void SecureDeleteFile(const std::wstring& filePath) {
-    if (GetFileAttributesW(filePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        DeleteFileW(filePath.c_str());
-    }
-}
 
-void PurgeBrowserCredentialDatabases() {
-    WIN32_FIND_DATAW findData;
-    // Iterate through all directories in C:\Users
-    HANDLE hFind = FindFirstFileW(L"C:\\Users\\*", &findData);
 
-    if (hFind == INVALID_HANDLE_VALUE) return;
 
-    do {
-        // Only process directories and skip system/hidden/current/parent directories
-        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            std::wstring dirName = findData.cFileName;
 
-            if (dirName != L"." && dirName != L".." &&
-                dirName != L"Public" && dirName != L"Default" && dirName != L"Default User") {
-
-                std::wstring basePath = L"C:\\Users\\" + dirName + L"\\AppData\\";
-
-                // Chromium-Based Browsers (Targets the 'Default' profile)
-                SecureDeleteFile(basePath + L"Local\\Google\\Chrome\\User Data\\Default\\Login Data");
-                SecureDeleteFile(basePath + L"Local\\Google\\Chrome\\User Data\\Default\\Login Data-journal");
-
-                SecureDeleteFile(basePath + L"Local\\Microsoft\\Edge\\User Data\\Default\\Login Data");
-                SecureDeleteFile(basePath + L"Local\\Microsoft\\Edge\\User Data\\Default\\Login Data-journal");
-
-                SecureDeleteFile(basePath + L"Local\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data");
-                SecureDeleteFile(basePath + L"Local\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data-journal");
-
-                // Firefox (Requires iterating through the Profiles directory)
-                std::wstring ffProfilesPath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\*";
-                WIN32_FIND_DATAW ffFindData;
-                HANDLE hFfFind = FindFirstFileW(ffProfilesPath.c_str(), &ffFindData);
-
-                if (hFfFind != INVALID_HANDLE_VALUE) {
-                    do {
-                        std::wstring ffDir = ffFindData.cFileName;
-                        if (ffDir != L"." && ffDir != L"..") {
-                            std::wstring profilePath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\" + ffDir + L"\\";
-                            SecureDeleteFile(profilePath + L"logins.json");
-                            SecureDeleteFile(profilePath + L"key4.db"); // Firefox decryption key
-                        }
-                    } while (FindNextFileW(hFfFind, &ffFindData));
-                    FindClose(hFfFind);
-                }
-            }
-        }
-    } while (FindNextFileW(hFind, &findData));
-
-    FindClose(hFind);
-}
-
-bool IsSpoolerClientConnectionsDisabled() {
-    HKEY hKey;
-    DWORD value = 0;
-    DWORD dwSize = sizeof(DWORD);
-    LPCWSTR subKey = L"Software\\Policies\\Microsoft\\Windows NT\\Printers";
-
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExW(hKey, L"RegisterSpoolerRemoteRpcEndPoint", NULL, NULL, (LPBYTE)&value, &dwSize) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return (value == 2);
-        }
-        RegCloseKey(hKey);
-    }
-    return false;
-}
-
-bool IsSMBv1Disabled() {
-    HKEY hKey;
-    DWORD smb1 = 1, dwSize = sizeof(DWORD);
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "SMB1", NULL, NULL, (LPBYTE)&smb1, &dwSize);
-        RegCloseKey(hKey);
-    }
-    return (smb1 == 0);
-}
-
-bool CheckSchannelKeyDisabled(const char* subKey) {
-    HKEY hKey;
-    DWORD enabled = 1;
-    DWORD dwSize = sizeof(DWORD);
-    char fullPath[512];
-
-    snprintf(fullPath, sizeof(fullPath), "SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\%s", subKey);
-
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, fullPath, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExA(hKey, "Enabled", NULL, NULL, (LPBYTE)&enabled, &dwSize) != ERROR_SUCCESS) {
-            enabled = 1;
-        }
-        RegCloseKey(hKey);
-    }
-    return (enabled == 0);
-}
-
-bool IsSslTlsHardened() {
-    bool noTls10 = CheckSchannelKeyDisabled("Protocols\\TLS 1.0\\Server");
-    bool noTls11 = CheckSchannelKeyDisabled("Protocols\\TLS 1.1\\Server");
-    bool noSsl30 = CheckSchannelKeyDisabled("Protocols\\SSL 3.0\\Server");
-
-    bool noRc4 = CheckSchannelKeyDisabled("Ciphers\\RC4 128/128");
-    bool noNull = CheckSchannelKeyDisabled("Ciphers\\NULL");
-    bool noDes = CheckSchannelKeyDisabled("Ciphers\\DES 56/56");
-
-    bool noMd5 = CheckSchannelKeyDisabled("Hashes\\MD5");
-
-    return (noTls10 && noTls11 && noSsl30 && noRc4 && noNull && noDes && noMd5);
-}
-
-bool IsBrowserAccountLocked() {
-    HKEY hKey;
-    DWORD dwSize = sizeof(DWORD);
-    DWORD edgeVal = 1, chromeVal = 1, braveVal = 1, firefoxAccounts = 0;
-    DWORD edgeSync = 0, chromeSync = 0, braveSync = 0;
-
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Edge", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "BrowserSignin", NULL, NULL, (LPBYTE)&edgeVal, &dwSize);
-        RegQueryValueExA(hKey, "SyncDisabled", NULL, NULL, (LPBYTE)&edgeSync, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "BrowserSignin", NULL, NULL, (LPBYTE)&chromeVal, &dwSize);
-        RegQueryValueExA(hKey, "SyncDisabled", NULL, NULL, (LPBYTE)&chromeSync, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\BraveSoftware\\Brave", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "BrowserSignin", NULL, NULL, (LPBYTE)&braveVal, &dwSize);
-        RegQueryValueExA(hKey, "SyncDisabled", NULL, NULL, (LPBYTE)&braveSync, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Mozilla\\Firefox", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "DisableFirefoxAccounts", NULL, NULL, (LPBYTE)&firefoxAccounts, &dwSize);
-        RegCloseKey(hKey);
-    }
-
-    return (edgeVal == 0 && chromeVal == 0 && braveVal == 0 && firefoxAccounts == 1 &&
-        edgeSync == 1 && chromeSync == 1 && braveSync == 1);
-}
-
-bool IsBrowserPasswordLocked() {
-    HKEY hKey;
-    DWORD dwSize = sizeof(DWORD);
-    DWORD edgeVal = 1, chromeVal = 1, braveVal = 1, firefoxVal = 1;
-
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Edge", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "PasswordManagerEnabled", NULL, NULL, (LPBYTE)&edgeVal, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "PasswordManagerEnabled", NULL, NULL, (LPBYTE)&chromeVal, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\BraveSoftware\\Brave", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "PasswordManagerEnabled", NULL, NULL, (LPBYTE)&braveVal, &dwSize);
-        RegCloseKey(hKey);
-    }
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Mozilla\\Firefox", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegQueryValueExA(hKey, "PasswordManagerEnabled", NULL, NULL, (LPBYTE)&firefoxVal, &dwSize);
-        RegCloseKey(hKey);
-    }
-
-    return (edgeVal == 0 && chromeVal == 0 && braveVal == 0 && firefoxVal == 0);
-}
-
-void ConfigureBrowserAccountLock(bool lockAccounts) {
-    HKEY hKey;
-    DWORD signinVal = lockAccounts ? 0 : 1;
-    DWORD syncVal = lockAccounts ? 1 : 0;
-    DWORD ffAccountVal = lockAccounts ? 1 : 0;
-
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Edge", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "BrowserSignin", 0, REG_DWORD, (const BYTE*)&signinVal, sizeof(signinVal));
-        RegSetValueExA(hKey, "SyncDisabled", 0, REG_DWORD, (const BYTE*)&syncVal, sizeof(syncVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "BrowserSignin", 0, REG_DWORD, (const BYTE*)&signinVal, sizeof(signinVal));
-        RegSetValueExA(hKey, "SyncDisabled", 0, REG_DWORD, (const BYTE*)&syncVal, sizeof(syncVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\BraveSoftware\\Brave", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "BrowserSignin", 0, REG_DWORD, (const BYTE*)&signinVal, sizeof(signinVal));
-        RegSetValueExA(hKey, "SyncDisabled", 0, REG_DWORD, (const BYTE*)&syncVal, sizeof(syncVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Mozilla\\Firefox", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "DisableFirefoxAccounts", 0, REG_DWORD, (const BYTE*)&ffAccountVal, sizeof(ffAccountVal));
-        RegCloseKey(hKey);
-    }
-    if (lockAccounts) {
-        RunSilentCmd("taskkill /F /IM msedge.exe /IM chrome.exe /IM firefox.exe /IM brave.exe /IM opera.exe /IM vivaldi.exe /T >nul 2>&1");
-    }
-}
-
-void ConfigureBrowserPasswordLock(bool lockPasswords) {
-    HKEY hKey;
-    DWORD passVal = lockPasswords ? 0 : 1;
-    DWORD ffOfferVal = lockPasswords ? 0 : 1;
-
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Edge", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\BraveSoftware\\Brave", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Mozilla\\Firefox", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, "PasswordManagerEnabled", 0, REG_DWORD, (const BYTE*)&passVal, sizeof(passVal));
-        RegSetValueExA(hKey, "OfferToSaveLogins", 0, REG_DWORD, (const BYTE*)&ffOfferVal, sizeof(ffOfferVal));
-        RegCloseKey(hKey);
-    }
-    if (lockPasswords) {
-        RunSilentCmd("taskkill /F /IM msedge.exe /IM chrome.exe /IM firefox.exe /IM brave.exe /IM opera.exe /IM vivaldi.exe /T >nul 2>&1");
-
-        Sleep(500);
-
-        PurgeBrowserCredentialDatabases();
-    }
-    }
 
 
 
@@ -922,79 +317,10 @@ bool RestartWin32Service(const char* serviceName) {
     return success == TRUE;
 }
 
-void ConfigureSMB(bool harden) {
-    HKEY hKey;
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        DWORD dwSmb1 = harden ? 0 : 1;
-        DWORD dwSmb2 = 1;
-        RegSetValueExA(hKey, "SMB1", 0, REG_DWORD, (const BYTE*)&dwSmb1, sizeof(dwSmb1));
-        RegSetValueExA(hKey, "SMB2", 0, REG_DWORD, (const BYTE*)&dwSmb2, sizeof(dwSmb2));
-        RegCloseKey(hKey);
-    }
-    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Services\\mrxsmb10", 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        DWORD dwStart = harden ? 4 : 2;
-        RegSetValueExA(hKey, "Start", 0, REG_DWORD, (const BYTE*)&dwStart, sizeof(dwStart));
-        RegCloseKey(hKey);
-    }
-    RestartWin32Service("LanmanServer");
-}
 
-void ConfigureSslTlsIISCrypto(bool harden) {
-    RunEmbeddedIISCrypto(harden);
-}
 
-DWORD GetFileSizeSafe(const std::wstring& filePath) {
-    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return 0;
 
-    DWORD size = GetFileSize(hFile, NULL);
-    CloseHandle(hFile);
 
-    return (size == INVALID_FILE_SIZE) ? 0 : size;
-}
-
-bool AreBrowserCredentialsPresent() {
-    WIN32_FIND_DATAW findData;
-    HANDLE hFind = FindFirstFileW(L"C:\\Users\\*", &findData);
-    if (hFind == INVALID_HANDLE_VALUE) return false;
-
-    bool foundData = false;
-    do {
-        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            std::wstring dirName = findData.cFileName;
-
-            if (dirName != L"." && dirName != L".." &&
-                dirName != L"Public" && dirName != L"Default" && dirName != L"Default User") {
-
-                std::wstring basePath = L"C:\\Users\\" + dirName + L"\\AppData\\";
-
-                // Chromium empty DBs are ~24KB to 32KB. We flag anything > 45KB (45000 bytes) as containing user data.
-                if (GetFileSizeSafe(basePath + L"Local\\Google\\Chrome\\User Data\\Default\\Login Data") > 45000) foundData = true;
-                if (GetFileSizeSafe(basePath + L"Local\\Microsoft\\Edge\\User Data\\Default\\Login Data") > 45000) foundData = true;
-                if (GetFileSizeSafe(basePath + L"Local\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data") > 45000) foundData = true;
-
-                // Firefox empty logins.json is basically empty. We flag anything > 100 bytes.
-                std::wstring ffProfilesPath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\*";
-                WIN32_FIND_DATAW ffFindData;
-                HANDLE hFfFind = FindFirstFileW(ffProfilesPath.c_str(), &ffFindData);
-
-                if (hFfFind != INVALID_HANDLE_VALUE) {
-                    do {
-                        std::wstring ffDir = ffFindData.cFileName;
-                        if (ffDir != L"." && ffDir != L"..") {
-                            std::wstring profilePath = basePath + L"Roaming\\Mozilla\\Firefox\\Profiles\\" + ffDir + L"\\";
-                            if (GetFileSizeSafe(profilePath + L"logins.json") > 100) foundData = true;
-                        }
-                    } while (FindNextFileW(hFfFind, &ffFindData));
-                    FindClose(hFfFind);
-                }
-            }
-        }
-    } while (!foundData && FindNextFileW(hFind, &findData));
-
-    FindClose(hFind);
-    return foundData;
-}
 
 
 
@@ -1212,7 +538,52 @@ void PerformAuditAndHighlight() {
     // --- Update your existing metric counters block ---
     // [Keep your existing if statements, and add this new one at the end:]
     if (!unneededFeaturesActive) g_secureCount++; else g_insecureCount++;
+
+    // 12. WinRAR Archiver (Index 11)
+    std::wstring winrarVer;
+    bool winrarInstalled = GetWinRARVersion(winrarVer);
+    std::wstring latestVersion = GetLatestWinRARVersionOnline();
+
+    if (winrarInstalled) {
+        std::string verStr(winrarVer.begin(), winrarVer.end());
+
+        if (!latestVersion.empty() && IsVersionOlder(winrarVer, latestVersion)) {
+            // Outdated
+            std::string latestStr(latestVersion.begin(), latestVersion.end());
+            g_hardRows[11].liveInfo = "WinRAR v" + verStr + " (Latest: v" + latestStr + ")";
+            g_hardRows[11].statusLabel = "Warning";
+            g_hardStates[11] = 1;
+            g_hardRows[11].actionLabel = "Update";
+            g_insecureCount++;
+        }
+        else {
+            // Installed & Up-to-date
+            g_hardRows[11].liveInfo = "WinRAR Installed (v" + verStr + ")";
+            g_hardRows[11].statusLabel = "Secured";
+            g_hardStates[11] = 2;
+            g_hardRows[11].actionLabel = "Open";
+            g_secureCount++;
+        }
+    }
+    else {
+        // Not installed -> Baseline state is SECURED
+        g_hardRows[11].liveInfo = "WinRAR is not installed on this device.";
+        g_hardRows[11].statusLabel = "Secured";
+        g_hardStates[11] = 2;
+        g_hardRows[11].actionLabel = "Install";
+        g_secureCount++;
+    }
+
+    SetWindowTextA(g_hardRows[11].hBtnAction, g_hardRows[11].actionLabel);
+    ShowWindow(g_hardRows[11].hBtnAction, SW_SHOW);
 }
+
+
+
+
+
+
+
 
 LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
     switch (uMsg) {
@@ -1270,7 +641,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         int startY = 55;
         int rowHeight = 38;
 
-        for (int i = 0; i < 11; i++) {
+        for (int i = 0; i < 12; i++) {
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
                 515, startY + 4, 70, 26,
@@ -1313,7 +684,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SetBkMode(hdc, TRANSPARENT);
 
         // Draw a distinct background container for the controls area
-        RECT rcControlsBg = { 10, 10, 600, 55 + (11 * 38) + 10 };
+        RECT rcControlsBg = { 10, 10, 600, 55 + (12 * 38) + 10 };
         HBRUSH hControlBgBrush = CreateSolidBrush(RGB(15, 23, 42));
         FillRect(hdc, &rcControlsBg, hControlBgBrush);
         DeleteObject(hControlBgBrush);
@@ -1358,7 +729,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         int startY = 55;
         int rowHeight = 38;
 
-        for (int i = 0; i < 11; i++) {
+        for (int i = 0; i < 12; i++) {
             RECT rcRow = { 15, startY, 590, startY + rowHeight };
 
             if (i % 2 == 1) {
@@ -1433,7 +804,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             UpdateStatus("Enforcing hardening policies sequentially... Please wait.");
 
             // Disable all row buttons during batch execution to prevent duplicate clicks
-            for (int i = 0; i < 11; i++) {
+            for (int i = 0; i < 12; i++) {
                 if (g_hardRows[i].hBtnAction) {
                     EnableWindow(g_hardRows[i].hBtnAction, FALSE);
                 }
@@ -1478,9 +849,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 RunTaskWithChecking(8, "Local Users", []() { ConfigureLocalUsers(true); });
                 RunTaskWithChecking(9, "Network Security Policies", []() { ConfigureNetworkSecPolicies(true); });
                 RunTaskWithChecking(10, "Unneeded Windows Features", []() { DisableUnneededWindowsFeaturesNative(); });
+                RunTaskWithChecking(11, "WinRAR Installation", []() { InstallLatestWinRAR(); });
 
                 // Re-enable row action buttons when all tasks finish
-                for (int i = 0; i < 11; i++) {
+                for (int i = 0; i < 12; i++) {
                     if (g_hardRows[i].hBtnAction) {
                         EnableWindow(g_hardRows[i].hBtnAction, TRUE);
                     }
@@ -1501,11 +873,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 return 0;
             }
 
-            if (isSecured) {
-               if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to revert this setting:")) {
-                    return 0; 
+            if (rowIdx == 11 && isSecured) {
+                std::wstring testVer;
+                if (GetWinRARVersion(testVer)) {
+                    // WinRAR is installed & up-to-date -> Open Control Panel
+                    ShellExecuteA(hwnd, "open", "control.exe", "appwiz.cpl", NULL, SW_SHOWNORMAL);
+                    return 0;
+                }
+                // WinRAR is not installed -> Proceed to run InstallLatestWinRAR() without prompt
+            }
+            else if (isSecured) {
+                if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to revert this setting:")) {
+                    return 0;
                 }
             }
+
+            
             g_hardRows[rowIdx].statusLabel = "Checking...";
             g_hardRows[rowIdx].liveInfo = "Applying changes and auditing status...";
 
@@ -1527,6 +910,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 case 8: ConfigureLocalUsers(g_hardStates[8] != 2); break;
                 case 9: ConfigureNetworkSecPolicies(g_hardStates[9] != 2); break;
                 case 10: DisableUnneededWindowsFeaturesNative(); break;
+                case 11: InstallLatestWinRAR(); break;
                 }
 
                 // Re-audit and refresh UI on main thread completion
