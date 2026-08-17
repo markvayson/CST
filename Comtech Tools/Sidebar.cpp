@@ -174,9 +174,9 @@ void CreateSidebarControls(HWND hwndParent) {
     int sidebarStartY = 20;
     int spacing = 12;
 
-    HWND hBtnSecureAll = CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    g_hBtnSecureAll = CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
-    SetWindowSubclass(hBtnSecureAll, SidebarBtnSubclassProc, 1, 0);
+    SetWindowSubclass(g_hBtnSecureAll, SidebarBtnSubclassProc, 1, 0);
 
     HWND hBtnInv = CreateWindowA("BUTTON", "Collect Inventories", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing), btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_INVENTORY, NULL, NULL);

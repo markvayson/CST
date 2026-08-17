@@ -127,16 +127,21 @@ template <class T> void SafeRelease(T** ppT) {
 #define ID_LOG_EDIT          1005
 #define ID_BTN_MENU          1006
 #define ID_HARD_BASE         2000
+#define ID_CHK_BASE          4000
 #ifndef IDM_ABOUT
 #define IDM_ABOUT            3002
 #endif
 #define IDM_SEARCHPASS       3003
 #define IDM_WINUPDATE        3004
 #define IDM_INVENTORY        3005
+#define ID_CHK_SELECT_ALL 4099
 
+HWND  g_hChkSelectAll = NULL;
 HWND g_hMainWnd = NULL;
 HWND g_hLogWnd = NULL;
 HWND g_hLogEdit = NULL;
+HWND g_hBtnSecureAll = NULL;
+bool g_isSelectAllChecked = true;
 
 // Execution State & Live Feedback Message
 std::string g_statusText = "";
@@ -160,24 +165,118 @@ struct HardeningRow {
     const char* actionLabel;
     wchar_t iconGlyph;
     HWND hBtnAction;
+    HWND hChkBox;
+    bool isChecked;
+
 };
 
 HardeningRow g_hardRows[12] = {
-    {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL},
-    {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL},
-    {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL},
-    {"Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL},
-    {"Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", L'\xE8B7', NULL},
-    {"SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", L'\xE72E', NULL},
-    {"Browser Account Login", "Auditing...", "Auditing...", "Lock", L'\xE77B', NULL},
-    {"Browser Password Lock & Removal", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL},
-    {"Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL},
-    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL},
-    {"Legacy & Unused Windows Features", "Auditing...", "Auditing...", "Disable", L'\xE74C', NULL},
-    {"WinRAR Archiver", "Auditing...", "Auditing...", "Install", L'\xE8B5', NULL} // <-- ADD THIS
+    {"Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL, NULL, true},
+    {"Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL, NULL, true},
+    {"SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL, NULL, true},
+    {"Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL, NULL, true},
+    {"Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", L'\xE8B7', NULL, NULL, true},
+    {"SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", L'\xE72E', NULL, NULL, true},
+    {"Browser Account Login", "Auditing...", "Auditing...", "Lock", L'\xE77B', NULL, NULL, true},
+    {"Browser Password Lock & Removal", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL, NULL, true},
+    {"Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL, NULL, true},
+    {"Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL, NULL, true},
+    {"Legacy & Unused Windows Features", "Auditing...", "Auditing...", "Disable", L'\xE74C', NULL, NULL, true},
+    {"WinRAR Archiver", "Auditing...", "Auditing...", "Install", L'\xE8B5', NULL, NULL, true}
 };
 
+// Add custom checkbox drawing helper at the top or above WM_PAINT
+void DrawCustomCheckbox(HDC hdc, int x, int y, bool isChecked, bool isDisabled, bool isSecured) {
+    RECT rcBox = { x, y, x + 16, y + 16 };
 
+    if (isSecured) {
+        // Option A: Render a clean custom "Secured" check badge for already secured items
+        HBRUSH hBadgeBrush = CreateSolidBrush(RGB(13, 148, 136)); // Teal/Green accent
+        FillRect(hdc, &rcBox, hBadgeBrush);
+        DeleteObject(hBadgeBrush);
+
+        // Draw Checkmark Glyph inside the badge
+        HFONT hFontCheck = CreateFontA(12, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, "Segoe MDL2 Assets");
+        HFONT hOldFont = (HFONT)SelectObject(hdc, hFontCheck);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        SetBkMode(hdc, TRANSPARENT);
+
+        // Segoe MDL2 Assets 0xE73E = Checkmark
+        wchar_t checkGlyph = 0xE73E;
+        DrawTextW(hdc, &checkGlyph, 1, &rcBox, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, hOldFont);
+        DeleteObject(hFontCheck);
+    }
+    else {
+        // Standard Dark Checkbox Box
+        HBRUSH hBgBrush = CreateSolidBrush(isChecked ? RGB(37, 99, 235) : RGB(15, 23, 42)); // Blue when checked, Dark Blue/Gray when unchecked
+        HPEN hBorderPen = CreatePen(PS_SOLID, 1, isChecked ? RGB(59, 130, 246) : RGB(71, 85, 105));
+
+        HPEN hOldPen = (HPEN)SelectObject(hdc, hBorderPen);
+        HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hBgBrush);
+
+        RoundRect(hdc, rcBox.left, rcBox.top, rcBox.right, rcBox.bottom, 4, 4);
+
+        if (isChecked) {
+            HFONT hFontCheck = CreateFontA(11, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE, "Segoe MDL2 Assets");
+            HFONT hOldFont = (HFONT)SelectObject(hdc, hFontCheck);
+            SetTextColor(hdc, RGB(255, 255, 255));
+            SetBkMode(hdc, TRANSPARENT);
+
+            wchar_t checkGlyph = 0xE73E; // Checkmark
+            DrawTextW(hdc, &checkGlyph, 1, &rcBox, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(hdc, hOldFont);
+            DeleteObject(hFontCheck);
+
+        }
+
+        SelectObject(hdc, hOldPen);
+        SelectObject(hdc, hOldBrush);
+        DeleteObject(hBorderPen);
+        DeleteObject(hBgBrush);
+    }
+}
+
+void UpdateSecureAllButtonText() {
+    int unsecureCount = 0;
+    int checkedUnsecureCount = 0;
+
+    for (int i = 0; i < 12; i++) {
+        // Only consider items that are NOT secured
+        if (g_hardStates[i] != 2) {
+            unsecureCount++;
+            if (g_hardRows[i].isChecked) {
+                checkedUnsecureCount++;
+            }
+        }
+    }
+
+    // Determine if header checkbox should be checked
+    g_isSelectAllChecked = (unsecureCount > 0 && checkedUnsecureCount == unsecureCount);
+
+    if (g_hChkSelectAll) {
+        SendMessage(g_hChkSelectAll, BM_SETCHECK, g_isSelectAllChecked ? BST_CHECKED : BST_UNCHECKED, 0);
+        InvalidateRect(g_hChkSelectAll, NULL, FALSE);
+    }
+
+    std::string btnText;
+
+    // Display "Secure All" if all remaining unsecured controls are checked
+    if (unsecureCount > 0 && checkedUnsecureCount == unsecureCount) {
+        btnText = "Secure All";
+    }
+    else {
+        btnText = "Secure (" + std::to_string(checkedUnsecureCount) + ")";
+    }
+
+    if (g_hBtnSecureAll) {
+        SetWindowTextA(g_hBtnSecureAll, btnText.c_str());
+    }
+}
 
 std::vector<PrinterStatus> g_printerList;
 
@@ -489,7 +588,7 @@ void PerformAuditAndHighlight() {
     else {
         g_hardRows[8].statusLabel = "Secured";
         g_hardStates[8] = 2;
-        g_hardRows[8].actionLabel = "Enable";
+        g_hardRows[8].actionLabel = "Open";
         SetWindowTextA(g_hardRows[8].hBtnAction, g_hardRows[8].actionLabel);
         ShowWindow(g_hardRows[8].hBtnAction, SW_SHOW);
     }
@@ -574,6 +673,22 @@ void PerformAuditAndHighlight() {
         g_secureCount++;
     }
 
+    for (int i = 0; i < 12; i++) {
+        if (g_hardStates[i] == 2) {
+            // Control is already secured -> Hide checkbox completely
+            ShowWindow(g_hardRows[i].hChkBox, SW_HIDE);
+            g_hardRows[i].isChecked = false;
+        }
+        else {
+            // Control needs hardening -> Show checkbox
+            ShowWindow(g_hardRows[i].hChkBox, SW_SHOW);
+            EnableWindow(g_hardRows[i].hChkBox, TRUE);
+        }
+    }
+
+    // Recalculate button label based on updated audit states
+    UpdateSecureAllButtonText();
+
     SetWindowTextA(g_hardRows[11].hBtnAction, g_hardRows[11].actionLabel);
     ShowWindow(g_hardRows[11].hBtnAction, SW_SHOW);
 }
@@ -620,7 +735,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     switch (uMsg) {
     case WM_ERASEBKGND:
         return 1;
+    case (WM_APP + 100):
+    {
+        int rowIdx = (int)wParam;
+        std::string title = "Operation Failed";
+        std::string msg = "Failed to update security policy:\n\"" +
+            std::string(g_hardRows[rowIdx].name) +
+            "\"\n\nCheck application logs or system permissions.";
 
+        // Displays your dark theme error dialog
+        ShowDarkMessageDialog(hwnd, title.c_str(), msg.c_str());
+        return 0;
+    }
 
     case WM_CREATE:
     {
@@ -638,13 +764,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         CreateSidebarControls(hwnd);
 
+        g_hChkSelectAll = CreateWindowA("BUTTON", "",
+            WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+            18, 25, 18, 18,
+            hwnd, (HMENU)(UINT_PTR)ID_CHK_SELECT_ALL, NULL, NULL);
+        SendMessage(g_hChkSelectAll, BM_SETCHECK, BST_CHECKED, 0);
+
         int startY = 55;
         int rowHeight = 38;
 
         for (int i = 0; i < 12; i++) {
+            // Create the Checkbox control
+            g_hardRows[i].hChkBox = CreateWindowA("BUTTON", "",
+                WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+                18, startY + 10, 18, 18,
+                hwnd, (HMENU)(UINT_PTR)(ID_CHK_BASE + i), NULL, NULL);
+
+            // Default state: Checked
+            SendMessage(g_hardRows[i].hChkBox, BM_SETCHECK, BST_CHECKED, 0);
+
+            // Create Action Button (shift x position slightly right if needed to accommodate checkbox)
             g_hardRows[i].hBtnAction = CreateWindowA("BUTTON", g_hardRows[i].actionLabel,
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-                515, startY + 4, 70, 26,
+                505, startY + 4, 80, 26,
                 hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
 
             SetWindowSubclass(g_hardRows[i].hBtnAction, HoverButtonProc, 0, 0);
@@ -692,7 +834,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         // Draw the Title
         SelectObject(hdc, g_hFontTitle);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        RECT rcTitle = { 15, 18, 290, 48 };
+        RECT rcTitle = { 45, 20, 290, 48 };
         DrawTextA(hdc, "System Hardening Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         // Calculate metrics
@@ -738,42 +880,60 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 DeleteObject(hAltBrush);
             }
 
-            // Icon
-            SelectObject(hdc, g_hFontIcon);
+            // 1. Draw Icon (Explicitly select icon font and handle drawing first)
+            HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
             SetTextColor(hdc, RGB(148, 163, 184));
-            RECT rcIcon = { 20, startY + 8, 50, startY + 30 };
+            RECT rcIcon = { 42, startY + 8, 68, startY + 30 };
             DrawTextW(hdc, &g_hardRows[i].iconGlyph, 1, &rcIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            // Name
+            // 2. Name
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, COLOR_TEXT_WHITE);
-            RECT rcName = { 45, startY + 2, 310, startY + 20 };
+            RECT rcName = { 68, startY + 2, 310, startY + 20 };
             DrawTextA(hdc, g_hardRows[i].name, -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-            // Live Info
+            // 3. Live Info
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, RGB(148, 163, 184));
-            RECT rcInfo = { 45, startY + 18, 300, startY + 36 };
+            RECT rcInfo = { 68, startY + 18, 300, startY + 36 };
             DrawTextA(hdc, g_hardRows[i].liveInfo.c_str(), -1, &rcInfo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-            // Dynamic Status Label Color
+            // 4. Dynamic Status Label Color
+           // 4. Dynamic Status Label Color & Icons
             COLORREF statusColor;
+            wchar_t statusIcon;
+
             if (g_hardRows[i].statusLabel == "Checking...") {
-                statusColor = RGB(251, 191, 36);
+                statusColor = RGB(251, 191, 36);  // Amber
+                statusIcon = L'\xE895';            // Sync / Loading icon
             }
             else if (g_hardStates[i] == 2) {
-                statusColor = RGB(96, 165, 250);
+                statusColor = RGB(96, 165, 250);  // Blue for Secured
+                statusIcon = L'\xEA18';            // Shield with Checkmark glyph
             }
             else {
-                statusColor = RGB(248, 113, 113);
+                statusColor = RGB(248, 113, 113);  // Red/Orange for Warning
+                statusIcon = L'\xE7BA';            // Warning Triangle icon
             }
 
-            // Draw Status Label
+            // A. Draw Status Icon (Shifted right closer to button at X=415)
+            SelectObject(hdc, g_hFontIcon);
             SetTextColor(hdc, statusColor);
-            RECT rcStatus = { 275, startY + 10, 505, startY + 28 };
-            DrawTextA(hdc, g_hardRows[i].statusLabel.c_str(), -1, &rcStatus, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            SetBkMode(hdc, TRANSPARENT);
+            RECT rcStatusIcon = { 415, startY + 10, 435, startY + 28 };
+            DrawTextW(hdc, &statusIcon, 1, &rcStatusIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            // B. Draw Status Text Label (Shifted right to X=437)
+            SelectObject(hdc, g_hFontBold);
+            SetTextColor(hdc, statusColor);
+            RECT rcStatusText = { 437, startY + 10, 505, startY + 28 };
+            DrawTextA(hdc, g_hardRows[i].statusLabel.c_str(), -1, &rcStatusText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            // Restore font handle
+            SelectObject(hdc, hOldFont);
 
             startY += rowHeight;
+        
         }
 
         BitBlt(hdcWindow, 0, 0, width, height, hdc, 0, 0, SRCCOPY);
@@ -790,54 +950,78 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     {
         int wmId = LOWORD(wParam);
 
-        if (HandleSidebarCommand(hwnd, wmId)) {
-            return 0; // The sidebar handled it, we can stop here
-        }
-        if (wmId == ID_BTN_SECURE_ALL) {
-            if (g_isExecuting) return 0;
+        if (wmId == ID_CHK_SELECT_ALL) {
+            // Toggle the state
+            g_isSelectAllChecked = !g_isSelectAllChecked;
 
-            if (!ShowDarkConfirmDialog(hwnd, "Enforce All Hardening Policies", "Are you sure you want to enforce all hardening policies?")) {
-                return 0; // User canceled
-            }
+            // Update the header checkbox visual state
+            SendMessage(g_hChkSelectAll, BM_SETCHECK, g_isSelectAllChecked ? BST_CHECKED : BST_UNCHECKED, 0);
+            InvalidateRect(g_hChkSelectAll, NULL, FALSE);
 
-            g_isExecuting = true;
-            UpdateStatus("Enforcing hardening policies sequentially... Please wait.");
-
-            // Disable all row buttons during batch execution to prevent duplicate clicks
+            // Apply state to all unsecured controls
             for (int i = 0; i < 12; i++) {
-                if (g_hardRows[i].hBtnAction) {
-                    EnableWindow(g_hardRows[i].hBtnAction, FALSE);
+                if (g_hardStates[i] != 2) {
+                    g_hardRows[i].isChecked = g_isSelectAllChecked;
+                    if (g_hardRows[i].hChkBox) {
+                        SendMessage(g_hardRows[i].hChkBox, BM_SETCHECK, g_isSelectAllChecked ? BST_CHECKED : BST_UNCHECKED, 0);
+                        InvalidateRect(g_hardRows[i].hChkBox, NULL, FALSE);
+                    }
                 }
             }
 
+            UpdateSecureAllButtonText();
+            return 0;
+        }
+
+        if (wmId >= ID_CHK_BASE && wmId < ID_CHK_BASE + 12) {
+            int index = wmId - ID_CHK_BASE;
+
+            // Only allow toggling if it is not already secured
+            if (g_hardStates[index] != 2) {
+                g_hardRows[index].isChecked = !g_hardRows[index].isChecked; // Toggle state
+                SendMessage(g_hardRows[index].hChkBox, BM_SETCHECK, g_hardRows[index].isChecked ? BST_CHECKED : BST_UNCHECKED, 0);
+                InvalidateRect(g_hardRows[index].hChkBox, NULL, FALSE); // Force redraw
+                UpdateSecureAllButtonText();
+            }
+            return 0;
+        }
+
+        // 2. Explicitly handle the Secure All button FIRST
+        if (wmId == ID_BTN_SECURE_ALL) {
+            if (g_isExecuting) return 0;
+
+            if (!ShowDarkConfirmDialog(hwnd, "Enforce Selected Hardening Policies", "Are you sure you want to enforce selected hardening policies?")) {
+                return 0;
+            }
+
+            g_isExecuting = true;
+            UpdateStatus("Enforcing selected hardening policies... Please wait.");
+
+            // Disable all row buttons and checkboxes during batch execution
+            for (int i = 0; i < 12; i++) {
+                if (g_hardRows[i].hBtnAction) EnableWindow(g_hardRows[i].hBtnAction, FALSE);
+                if (g_hardRows[i].hChkBox) EnableWindow(g_hardRows[i].hChkBox, FALSE);
+            }
+
             std::thread([hwnd]() {
-                // Helper lambda to mark a SINGLE row as "Checking...", run its action, then update the UI
                 auto RunTaskWithChecking = [hwnd](int rowIdx, const char* taskName, std::function<void()> actionFunc) {
-                    // 1. If this row was previously counted as Secured, decrement count temporarily
-                    if (g_hardStates[rowIdx] == 2) {
-                        if (g_secureCount > 0) g_secureCount--;
+                    // Only execute if not already secured and user kept checkbox checked
+                    if (g_hardStates[rowIdx] != 2 && g_hardRows[rowIdx].isChecked) {
+                        g_hardStates[rowIdx] = 1;
+                        g_hardRows[rowIdx].statusLabel = "Checking...";
+                        g_hardRows[rowIdx].liveInfo = "Applying policy...";
+
+                        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+
+                        actionFunc();
+
+                        PerformAuditAndHighlight();
+                        UpdateStatus(std::string(taskName) + " completed.");
+                        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
                     }
-
-                    // 2. Mark this row state as In-Progress (1) and set label to "Checking..."
-                    g_hardStates[rowIdx] = 1;
-                    g_hardRows[rowIdx].statusLabel = "Checking...";
-                    g_hardRows[rowIdx].liveInfo = "Applying policy...";
-
-                    // Force redraw so progress bar AND label drop/update immediately
-                    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-
-                    // 3. Run the actual hardening action
-                    actionFunc();
-
-                    // 4. Perform full audit to recalculate g_secureCount and set proper status (Secured/Warning)
-                    PerformAuditAndHighlight();
-                    UpdateStatus(std::string(taskName) + " completed.");
-
-                    // Redraw window to bump the progress bar up and set "Secured"
-                    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
                     };
 
-                // Execute row by row sequentially
+                // Execute sequentially for checked rows
                 RunTaskWithChecking(0, "Bluetooth Adapter", []() { SetBluetoothDeviceState(false); });
                 RunTaskWithChecking(1, "Wi-Fi Adapter", []() { SetWifiDeviceState(false); });
                 RunTaskWithChecking(2, "SMB Protocols", []() { ConfigureSMB(true); });
@@ -851,24 +1035,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 RunTaskWithChecking(10, "Unneeded Windows Features", []() { DisableUnneededWindowsFeaturesNative(); });
                 RunTaskWithChecking(11, "WinRAR Installation", []() { InstallLatestWinRAR(); });
 
-                // Re-enable row action buttons when all tasks finish
-                for (int i = 0; i < 12; i++) {
-                    if (g_hardRows[i].hBtnAction) {
-                        EnableWindow(g_hardRows[i].hBtnAction, TRUE);
-                    }
-                }
-
-                UpdateStatus("All hardening policies enforced successfully.");
                 g_isExecuting = false;
-                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                PerformAuditAndHighlight();
+                UpdateStatus("Selected hardening policies enforced successfully.");
                 }).detach();
+
+            return 0;
         }
 
-        else if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 120) {
+        // 3. Delegate other sidebar commands (Inventory, SearchPass, Windows Update, etc.)
+        if (HandleSidebarCommand(hwnd, wmId)) {
+            return 0;
+        }
+
+        // 4. Handle Individual Row Buttons
+        if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + 120) {
             int rowIdx = (wmId - ID_HARD_BASE) / 10;
             bool isSecured = (g_hardStates[rowIdx] == 2);
-
-            if (rowIdx == 10 && isSecured) {
+            
+            if (rowIdx == 8 && isSecured) {
+                // Option 2: Open standalone lusrmgr MMC directly focused on Users
+                ShellExecuteA(hwnd, "open", "mmc.exe", "lusrmgr.msc /s", NULL, SW_SHOWNORMAL);
+                return 0;
+            }
+            if (rowIdx == 10) {
                 ShellExecuteA(hwnd, "open", "optionalfeatures.exe", NULL, NULL, SW_SHOWNORMAL);
                 return 0;
             }
@@ -876,11 +1066,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             if (rowIdx == 11 && isSecured) {
                 std::wstring testVer;
                 if (GetWinRARVersion(testVer)) {
-                    // WinRAR is installed & up-to-date -> Open Control Panel
                     ShellExecuteA(hwnd, "open", "control.exe", "appwiz.cpl", NULL, SW_SHOWNORMAL);
                     return 0;
                 }
-                // WinRAR is not installed -> Proceed to run InstallLatestWinRAR() without prompt
             }
             else if (isSecured) {
                 if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to revert this setting:")) {
@@ -888,12 +1076,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 }
             }
 
-            
             g_hardRows[rowIdx].statusLabel = "Checking...";
             g_hardRows[rowIdx].liveInfo = "Applying changes and auditing status...";
 
             EnableWindow(g_hardRows[rowIdx].hBtnAction, FALSE);
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+
             std::thread([hwnd, rowIdx]() {
                 switch (rowIdx) {
                 case 0: HandleBluetoothToggle(hwnd);  break;
@@ -913,10 +1101,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 case 11: InstallLatestWinRAR(); break;
                 }
 
-                // Re-audit and refresh UI on main thread completion
                 PerformAuditAndHighlight();
                 EnableWindow(g_hardRows[rowIdx].hBtnAction, TRUE);
                 RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+
+                if (g_hardStates[rowIdx] != 2) {
+                    PostMessage(hwnd, WM_APP + 100, (WPARAM)rowIdx, 0);
+                }
                 }).detach();
         }
         break;
@@ -926,51 +1117,104 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     {
         LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
 
-        // 1. Draw the Sidebar Buttons
+        if ((pdis->CtlID >= ID_CHK_BASE && pdis->CtlID < ID_CHK_BASE + 12) || pdis->CtlID == ID_CHK_SELECT_ALL) {
+            int rowIdx = pdis->CtlID - ID_CHK_BASE;
+            bool isChecked = false;
+            bool isSecured = false;
+
+            COLORREF bgCol = RGB(15, 23, 42);
+            if (pdis->CtlID >= ID_CHK_BASE && pdis->CtlID < ID_CHK_BASE + 12) {
+                if (rowIdx % 2 == 1) {
+                    bgCol = RGB(23, 32, 51);
+                }
+            }
+            HBRUSH hBgFill = CreateSolidBrush(bgCol);
+            FillRect(pdis->hDC, &pdis->rcItem, hBgFill);
+            DeleteObject(hBgFill);
+
+            if (pdis->CtlID == ID_CHK_SELECT_ALL) {
+                isChecked = g_isSelectAllChecked;
+            }
+            else {
+                isChecked = g_hardRows[rowIdx].isChecked;
+                isSecured = (g_hardStates[rowIdx] == 2);
+            }
+
+            bool isDisabled = (pdis->itemState & ODS_DISABLED) != 0;
+            DrawCustomCheckbox(pdis->hDC, pdis->rcItem.left, pdis->rcItem.top, isChecked, isDisabled, isSecured);
+            return TRUE;
+        }
+
         if (IsSidebarButton(pdis->CtlID)) {
             DrawSidebarButton(pdis);
             return TRUE;
         }
-        // 2. Draw the Row Action Buttons ("Secure", "Disable", "Enable")
+
+        // Draw the Styled Action Buttons
+        // Draw the Styled Action Buttons
         else if (pdis->CtlID >= ID_HARD_BASE && pdis->CtlID < ID_HARD_BASE + 120) {
             HDC hdc = pdis->hDC;
             bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
             bool isHovered = GetPropA(pdis->hwndItem, "Hovered") != NULL;
 
-            COLORREF bgCol;
-            if (isPressed) {
-                bgCol = RGB(15, 23, 42); // Pressed color[cite: 3]
+            char btnText[32] = { 0 };
+            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
+            std::string textStr(btnText);
+
+            // Determine Icon based on Action Type
+            wchar_t buttonIcon = L'\xE8AC';
+
+            if (textStr == "Disable") {
+                buttonIcon = L'\xF140';           // Prohibit / Block
             }
-            else if (isHovered) {
-                bgCol = RGB(51, 65, 85); // NEW: Lighter shade for hover
+            else if (textStr == "Enable") {
+                buttonIcon = L'\xE8A5';           // Document / File
             }
-            else {
-                bgCol = RGB(30, 41, 59); // Default color[cite: 3]
+            else if (textStr == "Revert") {
+                buttonIcon = L'\xE8AC';           // Swap / Revert
+            }
+            else if (textStr == "Lock" || textStr == "Purge") {
+                buttonIcon = L'\xF140';           // Prohibit / Lock
+            }
+            else if (textStr == "Open" || textStr == "Secure" || textStr == "Install" || textStr == "Update") {
+                buttonIcon = L'\xE8A5';           // Open / Document
             }
 
+            // Colors: Clean neutral dark scheme
+            COLORREF bgCol = isPressed ? RGB(30, 41, 59) : (isHovered ? RGB(51, 65, 85) : RGB(23, 32, 51));
+            COLORREF borderCol = isHovered ? RGB(71, 85, 105) : RGB(51, 65, 85);
+            COLORREF textCol = RGB(226, 232, 240); // Soft bright white
+
+            // 1. Fill Background
             HBRUSH hBrush = CreateSolidBrush(bgCol);
             FillRect(hdc, &pdis->rcItem, hBrush);
             DeleteObject(hBrush);
 
-            // Border color 
-            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(71, 85, 105));
-            SelectObject(hdc, hPen);
-            SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            // 2. Draw Subtle Border
+            HPEN hPen = CreatePen(PS_SOLID, 1, borderCol);
+            HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            // Draw with rounded corners
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
+            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
+
+            SelectObject(hdc, hOldPen);
+            SelectObject(hdc, hOldBrush);
             DeleteObject(hPen);
 
-            // Set up text drawing
+            // 3. Draw Icon (Shifted to left with proper padding)
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(255, 255, 255)); // White text
+            SetTextColor(hdc, textCol);
+
+            HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
+            RECT rcBtnIcon = { pdis->rcItem.left + 6, pdis->rcItem.top, pdis->rcItem.left + 22, pdis->rcItem.bottom };
+            DrawTextW(hdc, &buttonIcon, 1, &rcBtnIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            // 4. Draw Text Label (Starts at left + 28 to leave a clean 6px gap after the icon)
             SelectObject(hdc, g_hFontBold);
+            RECT rcBtnText = { pdis->rcItem.left + 28, pdis->rcItem.top, pdis->rcItem.right - 4, pdis->rcItem.bottom };
+            DrawTextA(hdc, btnText, -1, &rcBtnText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            // Retrieve the text ("Secure", "Enable", etc.) and draw it
-            char btnText[32] = { 0 };
-            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-            DrawTextA(hdc, btnText, -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
+            SelectObject(hdc, hOldFont);
             return TRUE;
         }
         return TRUE;
