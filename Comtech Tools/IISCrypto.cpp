@@ -18,19 +18,32 @@ bool CheckSchannelKeyDisabled(const char* subKey) {
     }
     return (enabled == 0);
 }
+// IISCrypto.cpp
+
+bool DoesSystemMatchCustomTemplate() {
+    // 1. Verify strict protocols are explicitly disabled in registry
+    bool protocolsOk = CheckSchannelKeyDisabled("Protocols\\SSL 2.0\\Server") &&
+        CheckSchannelKeyDisabled("Protocols\\SSL 2.0\\Client") &&
+        CheckSchannelKeyDisabled("Protocols\\SSL 3.0\\Server") &&
+        CheckSchannelKeyDisabled("Protocols\\SSL 3.0\\Client") &&
+        CheckSchannelKeyDisabled("Protocols\\TLS 1.0\\Server") &&
+        CheckSchannelKeyDisabled("Protocols\\TLS 1.0\\Client") &&
+        CheckSchannelKeyDisabled("Protocols\\TLS 1.1\\Server") &&
+        CheckSchannelKeyDisabled("Protocols\\TLS 1.1\\Client");
+
+    // 2. Verify weak ciphers and hashes are disabled
+    bool ciphersOk = CheckSchannelKeyDisabled("Ciphers\\RC4 128/128") &&
+        CheckSchannelKeyDisabled("Ciphers\\NULL") &&
+        CheckSchannelKeyDisabled("Ciphers\\DES 56/56") &&
+        CheckSchannelKeyDisabled("Hashes\\MD5");
+
+    // Return true ONLY if every requirement defined in your template is met
+    return protocolsOk && ciphersOk;
+}
 
 bool IsSslTlsHardened() {
-    bool noTls10 = CheckSchannelKeyDisabled("Protocols\\TLS 1.0\\Server");
-    bool noTls11 = CheckSchannelKeyDisabled("Protocols\\TLS 1.1\\Server");
-    bool noSsl30 = CheckSchannelKeyDisabled("Protocols\\SSL 3.0\\Server");
-
-    bool noRc4 = CheckSchannelKeyDisabled("Ciphers\\RC4 128/128");
-    bool noNull = CheckSchannelKeyDisabled("Ciphers\\NULL");
-    bool noDes = CheckSchannelKeyDisabled("Ciphers\\DES 56/56");
-
-    bool noMd5 = CheckSchannelKeyDisabled("Hashes\\MD5");
-
-    return (noTls10 && noTls11 && noSsl30 && noRc4 && noNull && noDes && noMd5);
+    // Returns true (Secured) only if all template conditions match
+    return DoesSystemMatchCustomTemplate();
 }
 
 bool ExtractResourceToFile(int resourceID, const std::wstring& outputPath) {
@@ -94,6 +107,26 @@ bool RunEmbeddedIISCrypto(bool useCustomTemplate) {
     return success;
 }
 
+bool LaunchIISCryptoGUI() {
+    wchar_t tempPath[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempPath);
+
+    std::wstring exePath = std::wstring(tempPath) + L"IISCrypto.exe";
+
+    // Extract the GUI binary from resources (e.g., IDR_IISCRYPTOGUI)
+    if (ExtractResourceToFile(IDR_IISCRYPTOGUI, exePath)) {
+        HINSTANCE hInst = ShellExecuteW(NULL, L"runas", exePath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        return (INT_PTR)hInst > 32;
+    }
+    return false;
+}
+
 void ConfigureSslTlsIISCrypto(bool harden) {
-    RunEmbeddedIISCrypto(harden);
+    if (harden) {
+        RunEmbeddedIISCrypto(true);
+    }
+    else {
+        // Instead of applying default CLI template/reverting, launch the GUI app
+        LaunchIISCryptoGUI();
+    }
 }

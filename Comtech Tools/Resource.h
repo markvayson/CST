@@ -16,6 +16,7 @@
 #define IDR_RCDATA1                     132
 #define IDC_STATIC                      -1
 #define IDR_IISCRYPTOCLI				201
+#define IDR_IISCRYPTOGUI				203
 #define IDR_CUSTOMTEMPLATE				202
 #define WM_SEARCHPASS_CLOSED (WM_APP + 1)
 

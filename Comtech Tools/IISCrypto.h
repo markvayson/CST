@@ -17,3 +17,5 @@ bool ExtractResourceToFile(int resourceID, const std::wstring& outputPath);
 
 // Executes the embedded IIS Crypto CLI utility using specified templates
 bool RunEmbeddedIISCrypto(bool useCustomTemplate);
+
+bool LaunchIISCryptoGUI();
