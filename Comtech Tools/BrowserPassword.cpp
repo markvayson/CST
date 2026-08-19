@@ -80,6 +80,24 @@ bool AreBrowserCredentialsPresent() {
     return foundCredentials;
 }
 
+
+
+// Safely deletes browser password credential databases across user profiles
+void PurgeBrowserCredentialDatabases() {
+    char localAppData[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localAppData))) {
+        std::vector<std::string> targetFiles = {
+            std::string(localAppData) + "\\Google\\Chrome\\User Data\\Default\\Login Data",
+            std::string(localAppData) + "\\Microsoft\\Edge\\User Data\\Default\\Login Data",
+            std::string(localAppData) + "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data"
+        };
+
+        for (const auto& path : targetFiles) {
+            DeleteFileA(path.c_str());
+        }
+    }
+}
+
 // Enforces or disables browser password manager policies
 void ConfigureBrowserPasswordLock(bool lockPasswords) {
     DWORD passVal = lockPasswords ? 0 : 1;
@@ -97,21 +115,7 @@ void ConfigureBrowserPasswordLock(bool lockPasswords) {
         WritePolicyString("SOFTWARE\\Policies\\Google\\Chrome\\ClearBrowsingDataOnExitList", "1", "password_signin");
         WritePolicyString("SOFTWARE\\Policies\\BraveSoftware\\Brave\\ClearBrowsingDataOnExitList", "1", "password_signin");
         WritePolicyDWORD("SOFTWARE\\Policies\\Mozilla\\Firefox", "DisablePasswordManager", 1);
-    }
-}
 
-// Safely deletes browser password credential databases across user profiles
-void PurgeBrowserCredentialDatabases() {
-    char localAppData[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localAppData))) {
-        std::vector<std::string> targetFiles = {
-            std::string(localAppData) + "\\Google\\Chrome\\User Data\\Default\\Login Data",
-            std::string(localAppData) + "\\Microsoft\\Edge\\User Data\\Default\\Login Data",
-            std::string(localAppData) + "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data"
-        };
-
-        for (const auto& path : targetFiles) {
-            DeleteFileA(path.c_str());
-        }
+        PurgeBrowserCredentialDatabases();
     }
 }

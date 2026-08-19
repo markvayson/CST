@@ -97,6 +97,7 @@ std::string GetFileVersionValue(const char* valueName) {
 #define ID_HARD_BASE         2000
 #define ID_CHK_BASE          4000
 #define ID_CHK_SELECT_ALL    4099
+#define WM_SHOW_RESTART_PROMPT (WM_USER + 100)
 
 HWND g_hChkSelectAll = NULL;
 HWND g_hMainWnd = NULL;
@@ -149,6 +150,7 @@ int g_secureCount = 0;
 int g_attentionCount = 0;
 int g_insecureCount = 0;
 
+
 std::vector<PrinterStatus> g_printerList;
 
 // Function Declarations
@@ -173,7 +175,14 @@ struct SecurityControl {
     std::function<void(bool)> enforceFunc;
 };
 
+
+
+
 std::vector<SecurityControl> g_controls;
+
+
+
+
 
 void InitializeControls() {
     g_controls = {
@@ -201,27 +210,36 @@ void InitializeControls() {
             },
             [](bool enable) { SetWifiDeviceState(!enable); }
         },
+
         // 3. SMB Protocols
-        {
-            "SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL, NULL, true, 2,
-            [](SecurityControl& ctrl) {
-                bool smbHardened = IsSMBv1Disabled();
-                ctrl.liveInfo = smbHardened ? "SMBv1 protocol is securely disabled." : "SMBv1 protocol is currently enabled.";
-                ctrl.statusLabel = smbHardened ? "Secured" : "Warning";
-                ctrl.state = smbHardened ? 2 : 1;
-                ctrl.actionLabel = smbHardened ? "Check" : "Secure";
-            },
-        [](bool secure) {
-        ShellExecuteA(
-            g_hMainWnd,
-            "open",
-            "powershell.exe",
-            "-NoExit -Command \"Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, EnableSMB2Protocol\"",
-            NULL,
-            SW_SHOWNORMAL
-        );
+{
+    "SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL, NULL, true, 2,
+    [](SecurityControl& ctrl) {
+        bool smbHardened = IsSMBv1Disabled();
+        ctrl.liveInfo = smbHardened ? "SMBv1 protocol is securely disabled." : "SMBv1 protocol is currently enabled.";
+        ctrl.statusLabel = smbHardened ? "Secured" : "Warning";
+        ctrl.state = smbHardened ? 2 : 1;
+        ctrl.actionLabel = smbHardened ? "Check" : "Secure";
+    },
+    [](bool secure) {
+        if (secure) {
+            // Apply hardening changes directly
+            ConfigureSMB(true);
+        }
+ else {
+            // "Check" mode: Launch PowerShell inspection
+            ShellExecuteA(
+                g_hMainWnd,
+                "open",
+                "powershell.exe",
+                "-NoExit -Command \"Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, EnableSMB2Protocol\"",
+                NULL,
+                SW_SHOWNORMAL
+            );
+        }
     }
-        },
+},
+
         // 4. Shared Printers
         {
             "Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL, NULL, true, 2,
@@ -474,8 +492,15 @@ void PerformAuditAndHighlight() {
             ctrl.auditFunc(ctrl);
         }
 
-        if (ctrl.state == 2) g_secureCount++;
-        else g_insecureCount++;
+        // If the control is unsecured (state != 2), automatically check it for "Secure All"
+        if (ctrl.state != 2) {
+            ctrl.isChecked = true;
+            g_insecureCount++;
+        }
+        else {
+            ctrl.isChecked = false;
+            g_secureCount++;
+        }
 
         if (ctrl.hBtnAction && IsWindow(ctrl.hBtnAction)) {
             SetWindowTextA(ctrl.hBtnAction, ctrl.actionLabel.c_str());
@@ -555,8 +580,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     switch (uMsg) {
     case WM_ERASEBKGND:
         return 1;
-
+    case WM_SHOW_RESTART_PROMPT: {
+        if (ShowDarkRestartDialog(hwnd)) {
+            // Execute Windows Restart Command
+            ShellExecuteA(NULL, "open", "shutdown.exe", "/r /t 0", NULL, SW_HIDE);
+        }
+        return 0;
+    }
     case WM_CREATE: {
+        
         g_hMainWnd = hwnd;
         BOOL useDarkMode = TRUE;
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
@@ -574,22 +606,25 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         int startY = 55;
         int rowHeight = 38;
-
+        
         for (size_t i = 0; i < g_controls.size(); i++) {
+            // Optional: Add HWND checkbox creation if using physical controls
+            g_controls[i].hChkBox = CreateWindowA("BUTTON", "",
+                WS_CHILD | BS_CHECKBOX,
+                5, startY + 8, 15, 15,
+                hwnd, (HMENU)(UINT_PTR)(ID_CHK_BASE + i), NULL, NULL);
+
             g_controls[i].hBtnAction = CreateWindowA("BUTTON", g_controls[i].actionLabel.c_str(),
                 WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-                480, startY + 5, 100, 28,
+                370, startY + 5, 90, 28,
                 hwnd, (HMENU)(UINT_PTR)(ID_HARD_BASE + i * 10 + 1), NULL, NULL);
 
             SetWindowSubclass(g_controls[i].hBtnAction, HoverButtonProc, 0, 0);
             startY += rowHeight;
         }
-
-        LogMessage("Security Tool Started");
         PerformAuditAndHighlight();
         break;
     }
-
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdcWindow = BeginPaint(hwnd, &ps);
@@ -603,23 +638,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HBITMAP hMemBitmap = CreateCompatibleBitmap(hdcWindow, width, height);
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdc, hMemBitmap);
 
-        FillRect(hdc, &rcClient, g_hBrushBg);
+        // 1. Base window background (Lighter tone)
+        HBRUSH hBaseBgBrush = CreateSolidBrush(RGB(23, 32, 51));
+        FillRect(hdc, &rcClient, hBaseBgBrush);
+        DeleteObject(hBaseBgBrush);
         SetBkMode(hdc, TRANSPARENT);
 
-        RECT rcControlsBg = { 10, 10, 600, 55 + ((int)g_controls.size() * 38) + 10 };
-        HBRUSH hControlBgBrush = CreateSolidBrush(RGB(15, 23, 42));
-        FillRect(hdc, &rcControlsBg, hControlBgBrush);
-        DeleteObject(hControlBgBrush);
+        // 2. Render rounded card containers (Darker panel tone)
+        HBRUSH hPanelSurfaceBrush = CreateSolidBrush(RGB(15, 23, 42));
+        HPEN hNullPen = (HPEN)GetStockObject(NULL_PEN);
 
+        HPEN hOldPen = (HPEN)SelectObject(hdc, hNullPen);
+        HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hPanelSurfaceBrush);
+
+        // Corner radius for rounded panels (ellipse width/height)
+        int cornerRadius = 16;
+
+        // Left Control Panel Card
+        RoundRect(hdc, 10, 10, 475, height - 10, cornerRadius, cornerRadius);
+
+        // Right Side Panel Card (Aligned with 10px outer margin on right)
+        RoundRect(hdc, 485, 10, width - 10, height - 10, cornerRadius, cornerRadius);
+
+        // Cleanup drawing objects
+        SelectObject(hdc, hOldBrush);
+        SelectObject(hdc, hOldPen);
+        DeleteObject(hPanelSurfaceBrush);
+
+        // 3. Render Header Controls
         SelectObject(hdc, g_hFontTitle);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        RECT rcTitle = { 20, 20, 290, 48 };
+        RECT rcTitle = { 20, 20, 260, 48 };
         DrawTextA(hdc, "System Hardening Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         int percentMet = (g_totalControls > 0) ? (g_secureCount * 100 / g_totalControls) : 0;
 
-        RECT rcProgBg = { 290, 28, 545, 38 };
-        HBRUSH hProgBgBrush = CreateSolidBrush(RGB(30, 41, 59));
+        RECT rcProgBg = { 265, 28, 415, 38 };
+        HBRUSH hProgBgBrush = CreateSolidBrush(RGB(23, 32, 51));
         FillRect(hdc, &rcProgBg, hProgBgBrush);
         DeleteObject(hProgBgBrush);
 
@@ -638,21 +693,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SetTextColor(hdc, COLOR_TEXT_WHITE);
         char progText[32];
         snprintf(progText, sizeof(progText), "%d%%", percentMet);
-        RECT rcProgText = { 555, 20, 595, 45 };
+        RECT rcProgText = { 425, 20, 465, 45 };
         DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+        // 4. Render Individual Controls
         int startY = 55;
         int rowHeight = 38;
 
         for (size_t i = 0; i < g_controls.size(); i++) {
-            RECT rcRow = { 15, startY, 590, startY + rowHeight };
-
-            if (i % 2 == 1) {
-                HBRUSH hAltBrush = CreateSolidBrush(RGB(23, 32, 51));
-                FillRect(hdc, &rcRow, hAltBrush);
-                DeleteObject(hAltBrush);
-            }
-
             HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
             SetTextColor(hdc, RGB(148, 163, 184));
             RECT rcIcon = { 20, startY + 8, 46, startY + 30 };
@@ -680,7 +728,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         EndPaint(hwnd, &ps);
         return 0;
     }
-
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
 
@@ -750,6 +797,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 g_isExecuting = false;
                 PerformAuditAndHighlight();
                 UpdateStatus("Selected hardening policies enforced successfully.");
+                PostMessage(hwnd, WM_SHOW_RESTART_PROMPT, 0, 0);
                 }).detach();
 
             return 0;
@@ -868,25 +916,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetTextColor(hdc, statusIconColor);
             HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
 
+            // Left Status Badge Icon (Warning / Check)
             RECT rcBadgeIcon = { pdis->rcItem.left, pdis->rcItem.top, dividerX, pdis->rcItem.bottom };
             DrawTextW(hdc, &statusIcon, 1, &rcBadgeIcon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            wchar_t actionGlyph = L'\xE8A5';
-            std::string textStr(btnText);
-            if (textStr == "Disable")      actionGlyph = L'\xF140';
-            else if (textStr == "Revert")  actionGlyph = L'\xE70F';
-            else if (textStr == "Lock")    actionGlyph = L'\xE72E';
-            else if (textStr == "Open")    actionGlyph = L'\xED25';
-            else if (textStr == "Enable")  actionGlyph = L'\xE8A5';
-
-            RECT rcActionIcon = { dividerX + 4, pdis->rcItem.top, dividerX + 22, pdis->rcItem.bottom };
-            SelectObject(hdc, g_hFontIcon);
-            SetTextColor(hdc, rowIconColor);
-            DrawTextW(hdc, &actionGlyph, 1, &rcActionIcon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
+            // Button Text (Centered vertically directly next to the badge divider)
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, textCol);
-            RECT rcActionText = { dividerX + 24, pdis->rcItem.top, pdis->rcItem.right - 2, pdis->rcItem.bottom };
+            RECT rcActionText = { dividerX + 8, pdis->rcItem.top, pdis->rcItem.right - 2, pdis->rcItem.bottom };
             DrawTextA(hdc, btnText, -1, &rcActionText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
             SelectObject(hdc, hOldFont);
@@ -924,7 +961,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     HWND hwnd = CreateWindowExA(
         0, "CSCsecureMainClass", windowTitle.c_str(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+        CW_USEDEFAULT, CW_USEDEFAULT, 700, 600,
         NULL, NULL, hInstance, NULL
     );
 

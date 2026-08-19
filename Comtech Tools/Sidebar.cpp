@@ -168,9 +168,9 @@ LRESULT CALLBACK SidebarBtnSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 }
 
 void CreateSidebarControls(HWND hwndParent) {
-    int sidebarX = 610;
-    int btnWidth = 165;
-    int btnHeight = 48;
+    int sidebarX = 500;
+    int btnWidth = 160;
+    int btnHeight = 42;
     int sidebarStartY = 20;
     int spacing = 12;
 
