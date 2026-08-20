@@ -106,7 +106,30 @@ HWND g_hLogEdit = NULL;
 HWND g_hBtnSecureAll = NULL;
 bool g_isSelectAllChecked = true;
 
-#include <windows.h>
+
+
+void RunPowerShellInspector(const std::string& title, const std::string& psCode) {
+    // Encapsulate the script so it displays the code first, executes it, and holds the window open
+    std::string wrapper =
+        "$Host.UI.RawUI.WindowTitle = '" + title + "'; " +
+        "Write-Host '==================================================' -ForegroundColor Cyan; " +
+        "Write-Host ' Executing Audit Script for: " + title + "' -ForegroundColor Cyan; " +
+        "Write-Host '==================================================' -ForegroundColor Cyan; " +
+        "Write-Host '' ; " +
+        "Write-Host '--- [ POWERSHELL CODE ] ---' -ForegroundColor Yellow; " +
+        "Write-Host @'\n" + psCode + "\n'@ -ForegroundColor Gray; " +
+        "Write-Host '----------------------------' -ForegroundColor Yellow; " +
+        "Write-Host '' ; " +
+        "Write-Host '--- [ EXECUTION RESULT ] ---' -ForegroundColor Green; " +
+        psCode + "; " +
+        "Write-Host '' ; " +
+        "Write-Host 'Press any key to exit...' -ForegroundColor DarkGray; " +
+        "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown');";
+
+    // Launch PowerShell in a single interactive window
+    std::string cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"" + wrapper + "\"";
+    WinExec(cmd.c_str(), SW_SHOWNORMAL);
+}
 
 bool RestartWin32Service(const char* serviceName) {
     SC_HANDLE hSCManager = OpenSCManagerA(NULL, NULL, SC_MANAGER_ALL_ACCESS);
@@ -170,6 +193,7 @@ struct SecurityControl {
     HWND hChkBox;
     bool isChecked;
     int state; // 1 = Warning, 2 = Secured
+    bool isHovered = false;
 
     std::function<void(SecurityControl&)> auditFunc;
     std::function<void(bool)> enforceFunc;
@@ -188,7 +212,7 @@ void InitializeControls() {
     g_controls = {
         // 1. Bluetooth
         {
-            "Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL, NULL, true, 2,
+            "Bluetooth Adapter", "Auditing...", "Auditing...", "Disable", L'\xE702', NULL, NULL, true, 2, false,
             [](SecurityControl& ctrl) {
                 bool active = IsBluetoothEnabled();
                 ctrl.liveInfo = active ? "Bluetooth is currently enabled." : "Bluetooth adapter is securely disabled.";
@@ -200,7 +224,7 @@ void InitializeControls() {
         },
         // 2. Wi-Fi
         {
-            "Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL, NULL, true, 2,
+            "Wi-Fi Network Adapter", "Auditing...", "Auditing...", "Disable", L'\xE701', NULL, NULL, true, 2, false,
             [](SecurityControl& ctrl) {
                 bool active = IsWifiAdapterEnabled();
                 ctrl.liveInfo = active ? "Wi-Fi is currently enabled." : "Wi-Fi adapter is securely disabled.";
@@ -213,13 +237,13 @@ void InitializeControls() {
 
         // 3. SMB Protocols
 {
-    "SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL, NULL, true, 2,
+    "SMB Server Protocols", "Auditing...", "Auditing...", "Secure", L'\xE839', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         bool smbHardened = IsSMBv1Disabled();
         ctrl.liveInfo = smbHardened ? "SMBv1 protocol is securely disabled." : "SMBv1 protocol is currently enabled.";
         ctrl.statusLabel = smbHardened ? "Secured" : "Warning";
         ctrl.state = smbHardened ? 2 : 1;
-        ctrl.actionLabel = smbHardened ? "Check" : "Secure";
+        ctrl.actionLabel = smbHardened ? "Inspect" : "Secure";
     },
     [](bool secure) {
         if (secure) {
@@ -227,22 +251,18 @@ void InitializeControls() {
             ConfigureSMB(true);
         }
  else {
-            // "Check" mode: Launch PowerShell inspection
-            ShellExecuteA(
-                g_hMainWnd,
-                "open",
-                "powershell.exe",
-                "-NoExit -Command \"Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, EnableSMB2Protocol\"",
-                NULL,
-                SW_SHOWNORMAL
-            );
+std::string script =
+        "Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, EnableSMB2Protocol; "
+        "Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol";
+
+    RunPowerShellInspector("SMB Server Protocol Inspector", script);
         }
     }
 },
 
         // 4. Shared Printers
         {
-            "Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL, NULL, true, 2,
+            "Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL, NULL, true, 2, false,
             [](SecurityControl& ctrl) {
                 g_printerList = GetSystemPrintersInfo();
                 std::vector<std::string> sharedPrinters;
@@ -270,7 +290,7 @@ else {
  ctrl.liveInfo = "No shares & RPC client connections blocked.";
  ctrl.statusLabel = "Secured";
  ctrl.state = 2;
- ctrl.actionLabel = "Check";
+ ctrl.actionLabel = "Inspect";
 }
 },
 [](bool secure) {
@@ -279,19 +299,17 @@ else {
                 OnLockdownPrintersButtonClicked();
             }
      else {
-      std::string psCmd = "-NoExit -Command \""
-          "$path = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers'; "
-          "$val = (Get-ItemProperty -Path $path -Name 'RegisterSpoolerRemoteRpcEndPoint' -ErrorAction SilentlyContinue).RegisterSpoolerRemoteRpcEndPoint; "
-          "if ($val -eq 2) { Write-Host 'RPC Remote Client Connections are SECURELY DISABLED.' -ForegroundColor Green } "
-          "else { Write-Host 'RPC Remote Client Connections are ENABLED (Not Configured or Value=1).' -ForegroundColor Red }\"";
+                std::string script =
+        "Get-Printer | Select-Object Name, Shared, Published; "
+        "Get-SmbShare | Where-Object { $_.Special -eq $false }";
 
-      ShellExecuteA(g_hMainWnd, "open", "powershell.exe", psCmd.c_str(), NULL, SW_SHOWNORMAL);
+    RunPowerShellInspector("Shared Network Printers Inspector", script);
   }
 }
 },
 // 5. Shared Folders
 {
-    "Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", L'\xE8B7', NULL, NULL, true, 2,
+    "Shared Network Folders / Files", "Auditing...", "Auditing...", "Secure", L'\xE8B7', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         std::string fullShareList = "";
         bool hasSharedFolders = GetSystemSharedFoldersInfo(fullShareList);
@@ -322,19 +340,19 @@ else {
 },
 // 6. SSL / TLS
 {
-    "SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", L'\xE72E', NULL, NULL, true, 2,
+    "SSL / TLS & Ciphers", "Auditing...", "Auditing...", "Secure", L'\xE72E', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         bool sslTlsHardened = IsSslTlsHardened();
         ctrl.liveInfo = sslTlsHardened ? "Best practice IIS Crypto settings applied." : "Unsecured TLS/SSL ciphers are active.";
         ctrl.statusLabel = sslTlsHardened ? "Secured" : "Warning";
         ctrl.state = sslTlsHardened ? 2 : 1;
-        ctrl.actionLabel = sslTlsHardened ? "Check" : "Secure";
+        ctrl.actionLabel = sslTlsHardened ? "Inspect" : "Secure";
     },
     [](bool secure) { ConfigureSslTlsIISCrypto(secure); }
 },
 // 7. Browser Login
 {
-    "Browser Account Login", "Auditing...", "Auditing...", "Lock", L'\xE77B', NULL, NULL, true, 2,
+    "Browser Account Login", "Auditing...", "Auditing...", "Lock", L'\xE77B', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         bool locked = IsBrowserAccountLocked();
         ctrl.liveInfo = locked ? "Browser sign-in is securely disabled." : "Browser sign-in is currently allowed.";
@@ -346,7 +364,7 @@ else {
 },
 // 8. Browser Passwords
 {
-    "Browser Password Lock & Removal", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL, NULL, true, 2,
+    "Browser Password Lock & Removal", "Auditing...", "Auditing...", "Lock", L'\xE890', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         bool locked = IsBrowserPasswordLocked();
         bool exist = AreBrowserCredentialsPresent();
@@ -373,7 +391,7 @@ else {
 },
 // 9. Local User Accounts
 {
-    "Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL, NULL, true, 2,
+    "Local User Accounts", "Auditing...", "Auditing...", "Secure", L'\xE716', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         int userCount = 0;
         bool allDisabled = true, allExpire = true;
@@ -386,7 +404,7 @@ else {
 else {
  ctrl.statusLabel = "Secured";
  ctrl.state = 2;
- ctrl.actionLabel = "Check";
+ ctrl.actionLabel = "Inspect";
 }
 },
 [](bool secure) {
@@ -400,7 +418,7 @@ else {
 },
 // 10. Network Security Policies
 {
-    "Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL, NULL, true, 2,
+    "Network Security Policies", "Auditing...", "Auditing...", "Secure", L'\xE912', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         bool hardened = IsNetworkSecPoliciesHardened();
         ctrl.liveInfo = hardened ? "NTLMv2 & SMB Signing strictly enforced." : "Legacy NTLM or unsigned SMB allowed.";
@@ -412,7 +430,7 @@ else {
 },
 // 11. WinRAR Archiver (Corrected Index 10)
 {
-    "WinRAR Archiver", "Auditing...", "Auditing...", "Install", L'\xE8B5', NULL, NULL, true, 2,
+    "WinRAR Archiver", "Auditing...", "Auditing...", "Install", L'\xE7B8', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
         std::wstring winrarVer;
         bool winrarInstalled = GetWinRARVersion(winrarVer);
@@ -431,7 +449,7 @@ else {
  ctrl.liveInfo = "WinRAR Installed (v" + verStr + ")";
  ctrl.statusLabel = "Secured";
  ctrl.state = 2;
- ctrl.actionLabel = "Check";
+ ctrl.actionLabel = "Inspect";
 }
 }
 else {
@@ -442,12 +460,19 @@ else {
 }
 },
 [](bool secure) {
-    if (!secure) {
+    // Check current button label to determine action instead of relying on 'secure'
+    char btnText[32] = { 0 };
+    if (g_controls[10].hBtnAction) {
+        GetWindowTextA(g_controls[10].hBtnAction, btnText, sizeof(btnText));
+    }
+
+    if (std::string(btnText) == "Inspect") {
         ShellExecuteA(g_hMainWnd, "open", "control.exe", "appwiz.cpl", NULL, SW_SHOWNORMAL);
     }
-else {
- InstallLatestWinRAR();
-}
+    else {
+        // Triggers for "Install" or "Update"
+        InstallLatestWinRAR();
+    }
 }
 }
     };
@@ -560,13 +585,40 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             SetPropA(hWnd, "Hovered", (HANDLE)1);
             TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0 };
             TrackMouseEvent(&tme);
+
+            LONG_PTR ctlId = GetWindowLongPtr(hWnd, GWLP_ID);
+            if (ctlId >= ID_HARD_BASE && ctlId < ID_HARD_BASE + (int)(g_controls.size() * 10)) {
+                size_t rowIdx = (ctlId - ID_HARD_BASE) / 10;
+                if (rowIdx < g_controls.size()) {
+                    g_controls[rowIdx].isHovered = true;
+
+                    // Calculate exact rect of the icon for this row only
+                    int startY = 55 + (static_cast<int>(rowIdx) * 38);
+                    RECT rcIconArea = { 15, startY, 48, startY + 38 };
+                    InvalidateRect(g_hMainWnd, &rcIconArea, FALSE); // Repaint ONLY the icon region
+                }
+            }
             InvalidateRect(hWnd, NULL, FALSE);
         }
         break;
-    case WM_MOUSELEAVE:
+    case WM_MOUSELEAVE: {
+
         RemovePropA(hWnd, "Hovered");
+        LONG_PTR ctlId = GetWindowLongPtr(hWnd, GWLP_ID);
+        if (ctlId >= ID_HARD_BASE && ctlId < ID_HARD_BASE + (int)(g_controls.size() * 10)) {
+            size_t rowIdx = (ctlId - ID_HARD_BASE) / 10;
+            if (rowIdx < g_controls.size()) {
+                g_controls[rowIdx].isHovered = false;
+
+                // Calculate exact rect of the icon for this row only
+                int startY = 55 + (static_cast<int>(rowIdx) * 38);
+                RECT rcIconArea = { 15, startY, 48, startY + 38 };
+                InvalidateRect(g_hMainWnd, &rcIconArea, FALSE); // Repaint ONLY the icon region
+            }
+        }
         InvalidateRect(hWnd, NULL, FALSE);
         break;
+    }
     case WM_DESTROY:
         RemovePropA(hWnd, "Hovered");
         RemoveWindowSubclass(hWnd, HoverButtonProc, uIdSubclass);
@@ -696,21 +748,45 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         RECT rcProgText = { 425, 20, 465, 45 };
         DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+        
         // 4. Render Individual Controls
         int startY = 55;
         int rowHeight = 38;
 
         for (size_t i = 0; i < g_controls.size(); i++) {
-            HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
-            SetTextColor(hdc, RGB(148, 163, 184));
-            RECT rcIcon = { 20, startY + 8, 46, startY + 30 };
-            DrawTextW(hdc, &g_controls[i].iconGlyph, 1, &rcIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            // Check hover status for dynamic accent styling
+            bool isRowActive = g_controls[i].isHovered;
 
+            // Optional Glow/Round Highlight Circle behind the Left Icon when Hovered
+            if (isRowActive) {
+                HBRUSH hGlowBrush = CreateSolidBrush(RGB(30, 58, 138)); // Dark accent blue background
+                HPEN hGlowPen = CreatePen(PS_SOLID, 1, RGB(59, 130, 246));  // Vibrant blue ring
+                HPEN hOldPen = (HPEN)SelectObject(hdc, hGlowPen);
+                HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hGlowBrush);
+
+                RoundRect(hdc, 18, startY + 5, 44, startY + 31, 6, 6);
+
+                SelectObject(hdc, hOldPen);
+                SelectObject(hdc, hOldBrush);
+                DeleteObject(hGlowPen);
+                DeleteObject(hGlowBrush);
+            }
+
+            // Set Icon Color (Glow Bright Blue on Hover, Gray otherwise)
+            COLORREF iconColor = isRowActive ? RGB(96, 165, 250) : RGB(148, 163, 184);
+
+            HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
+            SetTextColor(hdc, iconColor);
+            RECT rcIcon = { 18, startY + 5, 44, startY + 31 };
+            DrawTextW(hdc, &g_controls[i].iconGlyph, 1, &rcIcon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // Control Title
             SelectObject(hdc, g_hFontBold);
-            SetTextColor(hdc, COLOR_TEXT_WHITE);
+            SetTextColor(hdc, isRowActive ? RGB(255, 255, 255) : COLOR_TEXT_WHITE);
             RECT rcName = { 48, startY + 2, 330, startY + 20 };
             DrawTextA(hdc, g_controls[i].name.c_str(), -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
+            // Subtitle / Live Info
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, RGB(148, 163, 184));
             RECT rcInfo = { 48, startY + 18, 330, startY + 36 };
@@ -719,7 +795,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             RestoreDC(hdc, -1);
             startY += rowHeight;
         }
-
+            
+            
         BitBlt(hdcWindow, 0, 0, width, height, hdc, 0, 0, SRCCOPY);
         SelectObject(hdc, hOldBitmap);
         DeleteObject(hMemBitmap);
@@ -819,7 +896,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 }
 
                 ctrl.statusLabel = "Checking...";
-                if (ctrl.actionLabel == "Open" || ctrl.actionLabel == "Check") {
+                if (ctrl.actionLabel == "Open" || ctrl.actionLabel == "Inspect") {
                     ctrl.liveInfo = "Checking " + ctrl.name + "...";
                 }
                 else if (isSecured) {
@@ -959,7 +1036,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     if (g_appProductName.empty()) windowTitle += "CSCsecure";
 
     HWND hwnd = CreateWindowExA(
-        0, "CSCsecureMainClass", windowTitle.c_str(),
+        WS_EX_COMPOSITED,
+        "CSCsecureMainClass", windowTitle.c_str(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 700, 600,
         NULL, NULL, hInstance, NULL
