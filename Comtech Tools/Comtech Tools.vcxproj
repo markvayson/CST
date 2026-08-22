@@ -172,6 +172,7 @@
     <ClInclude Include="LocalAccounts.h" />
     <ClInclude Include="NetworkSecPolicies.h" />
     <ClInclude Include="NetworkPrinters.h" />
+    <ClInclude Include="ProgressBar.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="SearchPass.h" />
     <ClInclude Include="SharedFolders.h" />
@@ -195,6 +196,7 @@
     <ClCompile Include="LocalAccounts.cpp" />
     <ClCompile Include="NetworkPrinters.cpp" />
     <ClCompile Include="NetworkSecPolicies.cpp" />
+    <ClCompile Include="ProgressBar.cpp" />
     <ClCompile Include="SearchPass.cpp" />
     <ClCompile Include="SharedFolders.cpp" />
     <ClCompile Include="Sidebar.cpp" />

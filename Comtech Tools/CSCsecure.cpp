@@ -10,7 +10,6 @@
 #include <time.h>
 #include <string>
 #include <shellapi.h>
-
 #include <vector>
 #include <regex>
 #include <fstream>
@@ -24,6 +23,7 @@
 #include "SearchPass.h"
 #include "Theme.h"
 #include <thread>
+#include <chrono>
 #include <functional>
 #include "Sidebar.h"
 #include "WifiAdapter.h"
@@ -46,6 +46,15 @@
 #pragma comment(lib, "dwmapi.lib") 
 #pragma comment(lib, "version.lib")
 #pragma comment(lib, "userenv.lib")
+
+
+
+// Function Declarations
+void LogMessage(const std::string& msg);
+void UpdateStatus(const std::string& msg);
+void PerformAuditAndHighlight();
+void UpdateSecureAllButtonText();
+
 
 std::string g_appProductName = "";
 std::string g_appVersion = "";
@@ -131,6 +140,51 @@ void RunPowerShellInspector(const std::string& title, const std::string& psCode)
     WinExec(cmd.c_str(), SW_SHOWNORMAL);
 }
 
+void ExecuteButtonActionWithSpinner(HWND hBtn, std::function<void()> action, std::string completedLabel) {
+    if (!hBtn || !IsWindow(hBtn)) return;
+    EnableWindow(hBtn, FALSE);
+
+    std::thread([hBtn, action, completedLabel]() {
+        int frameIdx = 0;
+        bool isDone = false;
+
+        // Set spinning state flag on the button control
+        SetPropA(hBtn, "IsSpinning", (HANDLE)1);
+
+        // Run the system modification task on a separate thread
+        std::thread task([action, &isDone]() {
+            action();
+            isDone = true;
+            });
+
+        // Animate the spinner frame index while processing
+        while (!isDone) {
+            SetPropA(hBtn, "SpinnerFrameIndex", (HANDLE)(INT_PTR)frameIdx);
+            InvalidateRect(hBtn, NULL, FALSE); // Force redraw of button badge area
+
+            frameIdx = (frameIdx + 1) % 8; // Cycle through the 8 MDL2 ring spinner frames
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        }
+
+        // Clean up task thread
+        if (task.joinable()) {
+            task.join();
+        }
+
+        RemovePropA(hBtn, "IsSpinning");
+        RemovePropA(hBtn, "SpinnerFrameIndex");
+
+        // Restore button state and label
+        SetWindowTextA(hBtn, completedLabel.c_str());
+        EnableWindow(hBtn, TRUE);
+
+        // Refresh UI & audit state
+        if (g_hMainWnd) {
+            PostMessage(g_hMainWnd, WM_COMMAND, MAKEWPARAM(0, 0), 0);
+            PerformAuditAndHighlight();
+        }
+        }).detach();
+}
 bool RestartWin32Service(const char* serviceName) {
     SC_HANDLE hSCManager = OpenSCManagerA(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!hSCManager) return false;
@@ -172,15 +226,12 @@ int g_totalControls = 0;
 int g_secureCount = 0;
 int g_attentionCount = 0;
 int g_insecureCount = 0;
+int g_currentPercent = 0;
+int g_targetPercent = 10;
 
 
 std::vector<PrinterStatus> g_printerList;
 
-// Function Declarations
-void LogMessage(const std::string& msg);
-void UpdateStatus(const std::string& msg);
-void PerformAuditAndHighlight();
-void UpdateSecureAllButtonText();
 
 // --- DATA-DRIVEN ARCHITECTURE ---
 struct SecurityControl {
@@ -203,9 +254,6 @@ struct SecurityControl {
 
 
 std::vector<SecurityControl> g_controls;
-
-
-
 
 
 void InitializeControls() {
@@ -534,6 +582,10 @@ void PerformAuditAndHighlight() {
     }
 
     UpdateSecureAllButtonText();
+    if (g_hMainWnd) {
+        int calculatedPercent = (g_totalControls > 0) ? (g_secureCount * 100 / g_totalControls) : 0;
+       
+    }
 }
 
 void LogMessage(const std::string& msg) {
@@ -717,38 +769,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SelectObject(hdc, hOldPen);
         DeleteObject(hPanelSurfaceBrush);
 
-        // 3. Render Header Controls
-        SelectObject(hdc, g_hFontTitle);
-        SetTextColor(hdc, COLOR_TEXT_WHITE);
-        RECT rcTitle = { 20, 20, 260, 48 };
-        DrawTextA(hdc, "System Hardening Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        int percentMet = (g_totalControls > 0) ? (g_secureCount * 100 / g_totalControls) : 0;
-
-        RECT rcProgBg = { 265, 28, 415, 38 };
-        HBRUSH hProgBgBrush = CreateSolidBrush(RGB(23, 32, 51));
-        FillRect(hdc, &rcProgBg, hProgBgBrush);
-        DeleteObject(hProgBgBrush);
-
-        if (percentMet > 0) {
-            RECT rcProgFill = rcProgBg;
-            rcProgFill.right = rcProgBg.left + ((rcProgBg.right - rcProgBg.left) * percentMet / 100);
-            COLORREF barColor = (percentMet == 100) ? RGB(13, 148, 136) : RGB(96, 165, 250);
-            if (percentMet < 50) barColor = RGB(248, 113, 113);
-
-            HBRUSH hProgFillBrush = CreateSolidBrush(barColor);
-            FillRect(hdc, &rcProgFill, hProgFillBrush);
-            DeleteObject(hProgFillBrush);
-        }
-
-        SelectObject(hdc, g_hFontBold);
-        SetTextColor(hdc, COLOR_TEXT_WHITE);
-        char progText[32];
-        snprintf(progText, sizeof(progText), "%d%%", percentMet);
-        RECT rcProgText = { 425, 20, 465, 45 };
-        DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
         
+
+
         // 4. Render Individual Controls
         int startY = 55;
         int rowHeight = 38;
@@ -808,6 +831,50 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
 
+
+        if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + (int)(g_controls.size() * 10)) {
+            size_t rowIdx = (wmId - ID_HARD_BASE) / 10;
+            if (rowIdx < g_controls.size()) {
+                auto& ctrl = g_controls[rowIdx];
+                bool isSecured = (ctrl.state == 2);
+                std::string action = ctrl.actionLabel;
+
+                // ASK FOR CREDENTIALS FIRST
+                if (isSecured && action != "Inspect" && action != "Open") {
+                    if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to continue:")) {
+                        return 0; // User canceled or password failed — stop execution!
+                    }
+                }
+
+                // DETERMINE TARGET STATE BASED ON CURRENT STATE
+                bool targetState = !isSecured;
+
+                auto actionTask = [&ctrl, targetState]() {
+                    if (ctrl.enforceFunc) {
+                        ctrl.enforceFunc(targetState);
+                    }
+                };
+
+                std::string completedLabel = (ctrl.state == 2) ? "Disable" : "Secured";
+                ExecuteButtonActionWithSpinner(ctrl.hBtnAction, actionTask, completedLabel);
+            }
+            return 0;
+        }
+
+        for (auto& ctrl : g_controls) {
+            if (ctrl.hBtnAction && (HWND)lParam == ctrl.hBtnAction) {
+
+                auto actionTask = [&ctrl]() {
+                    if (ctrl.enforceFunc) {
+                        ctrl.enforceFunc(true);
+                    }
+                    };
+
+                ExecuteButtonActionWithSpinner(ctrl.hBtnAction, actionTask, "Secured");
+                break;
+            }
+        }
+
         if (wmId == ID_CHK_SELECT_ALL) {
             g_isSelectAllChecked = !g_isSelectAllChecked;
             SendMessage(g_hChkSelectAll, BM_SETCHECK, g_isSelectAllChecked ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -852,6 +919,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             g_isExecuting = true;
             UpdateStatus("Enforcing selected hardening policies... Please wait.");
 
+            // Disable main global buttons
+            if (g_hBtnSecureAll) EnableWindow(g_hBtnSecureAll, FALSE);
+            if (g_hChkSelectAll) EnableWindow(g_hChkSelectAll, FALSE);
+
+            // Disable all row action buttons and checkboxes to prevent clicking during execution
             for (auto& ctrl : g_controls) {
                 if (ctrl.hBtnAction) EnableWindow(ctrl.hBtnAction, FALSE);
                 if (ctrl.hChkBox) EnableWindow(ctrl.hChkBox, FALSE);
@@ -860,20 +932,78 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             std::thread([hwnd]() {
                 for (size_t i = 0; i < g_controls.size(); i++) {
                     if (g_controls[i].state != 2 && g_controls[i].isChecked) {
-                        g_controls[i].state = 1;
-                        g_controls[i].statusLabel = "Checking...";
-                        g_controls[i].liveInfo = "Applying policy...";
-                        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+                        HWND hBtn = g_controls[i].hBtnAction;
 
-                        if (g_controls[i].enforceFunc) {
-                            g_controls[i].enforceFunc(true);
+                        // Mark current processing state & attach spinner property
+                        g_controls[i].statusLabel = "Applying...";
+                        g_controls[i].liveInfo = "Applying policy...";
+
+                        if (hBtn && IsWindow(hBtn)) {
+                            SetPropA(hBtn, "IsSpinning", (HANDLE)1);
                         }
+
+                        bool isDone = false;
+                        int frameIdx = 0;
+
+                        // Run enforcement task on a worker thread
+                        std::thread task([i, &isDone]() {
+                            if (g_controls[i].enforceFunc) {
+                                g_controls[i].enforceFunc(true);
+                            }
+                            isDone = true;
+                            });
+
+                        // Animate loading spinner frame index on the button control while processing
+                        while (!isDone) {
+                            if (hBtn && IsWindow(hBtn)) {
+                                SetPropA(hBtn, "SpinnerFrameIndex", (HANDLE)(INT_PTR)frameIdx);
+                                InvalidateRect(hBtn, NULL, FALSE);
+                            }
+                            frameIdx = (frameIdx + 1) % 8;
+                            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                        }
+
+                        if (task.joinable()) {
+                            task.join();
+                        }
+
+                        // Remove spinner properties upon completion
+                        if (hBtn && IsWindow(hBtn)) {
+                            RemovePropA(hBtn, "IsSpinning");
+                            RemovePropA(hBtn, "SpinnerFrameIndex");
+                            InvalidateRect(hBtn, NULL, FALSE);
+                        }
+
+                        // Allow brief delay for OS/service changes to take effect
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+                        // Audit individually right away to update warning/check icon and status
+                        if (g_controls[i].auditFunc) {
+                            g_controls[i].auditFunc(g_controls[i]);
+                        }
+
+                        // Refresh UI immediately
+                        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
                     }
                 }
 
-                g_isExecuting = false;
+                // Final overall re-audit to update counters and header metrics
                 PerformAuditAndHighlight();
+
+                // Re-enable main global buttons
+                if (g_hBtnSecureAll) EnableWindow(g_hBtnSecureAll, TRUE);
+                if (g_hChkSelectAll) EnableWindow(g_hChkSelectAll, TRUE);
+
+                // Re-enable individual controls
+                for (auto& ctrl : g_controls) {
+                    if (ctrl.hBtnAction) EnableWindow(ctrl.hBtnAction, TRUE);
+                    if (ctrl.hChkBox) EnableWindow(ctrl.hChkBox, TRUE);
+                }
+
+                g_isExecuting = false;
                 UpdateStatus("Selected hardening policies enforced successfully.");
+                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+
                 PostMessage(hwnd, WM_SHOW_RESTART_PROMPT, 0, 0);
                 }).detach();
 
@@ -882,58 +1012,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         if (HandleSidebarCommand(hwnd, wmId)) return 0;
 
-        // Generic Individual Action Buttons Handler
-        if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + (int)(g_controls.size() * 10)) {
-            size_t rowIdx = (wmId - ID_HARD_BASE) / 10;
-            if (rowIdx < g_controls.size()) {
-                auto& ctrl = g_controls[rowIdx];
-                bool isSecured = (ctrl.state == 2);
-
-                if (isSecured && rowIdx != 2 && rowIdx !=3 && rowIdx !=5 && rowIdx != 8 && rowIdx != 10) {
-                    if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to revert this setting:")) {
-                        return 0;
-                    }
-                }
-
-                ctrl.statusLabel = "Checking...";
-                if (ctrl.actionLabel == "Open" || ctrl.actionLabel == "Inspect") {
-                    ctrl.liveInfo = "Checking " + ctrl.name + "...";
-                }
-                else if (isSecured) {
-                    ctrl.liveInfo = "Reverting " + ctrl.name + " settings...";
-                }
-                else {
-                    ctrl.liveInfo = "Securing " + ctrl.name + "...";
-                }
-                EnableWindow(ctrl.hBtnAction, FALSE);
-                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-
-                std::thread([hwnd, rowIdx, isSecured]() {
-                    if (g_controls[rowIdx].enforceFunc) {
-                        // True if target is securing (currently unsecured), False if reverting/unsecuring
-                        bool targetSecuredState = !isSecured;
-
-                        g_controls[rowIdx].enforceFunc(targetSecuredState);
-
-                        // Give Windows services/drivers time to update device state before auditing
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-                        // Audit the system to refresh ctrl.state and ctrl.statusLabel
-                        PerformAuditAndHighlight();
-
-                        // Determine expected state based on action taken:
-                        // Secured state = 2, Unsecured/Warning state = 1
-                        int expectedState = targetSecuredState ? 2 : 1;
-
-                    }
-                    PerformAuditAndHighlight();
-                    EnableWindow(g_controls[rowIdx].hBtnAction, TRUE);
-                    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-
-                    }).detach();
-            }
-            return 0;
-        }
         break;
     }
 
@@ -950,28 +1028,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             size_t rowIdx = (pdis->CtlID - ID_HARD_BASE) / 10;
             if (rowIdx >= g_controls.size()) return TRUE;
 
-            if (g_controls[rowIdx].actionLabel.empty()) {
-                ShowWindow(pdis->hwndItem, SW_HIDE);
-                return TRUE;
+            // 1. Status Icon & Processing State
+            bool isSpinning = GetPropA(pdis->hwndItem, "IsSpinning") != NULL;
+            wchar_t statusIcon = (g_controls[rowIdx].state == 2) ? L'\xE73E' : L'\xEdb1'; // Check vs Warning
+            COLORREF statusIconColor = (g_controls[rowIdx].state == 2) ? RGB(59, 130, 246) : RGB(239, 68, 68);
+
+            // 2. Spinner Frames Setup
+            if (isSpinning) {
+                static const wchar_t spinnerFrames[] = { L'\xE712', L'\xE713', L'\xE714', L'\xE715', L'\xE716', L'\xE717', L'\xE718', L'\xE719' };
+                INT_PTR frameIdx = (INT_PTR)GetPropA(pdis->hwndItem, "SpinnerFrameIndex");
+                statusIcon = spinnerFrames[frameIdx % 8];
+                statusIconColor = RGB(96, 165, 250); // Active blue highlight
             }
-            else {
-                ShowWindow(pdis->hwndItem, SW_SHOW);
-            }
+
+            char btnText[32] = { 0 };
+            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
+            bool hasButtonText = (btnText[0] != '\0' && strcmp(btnText, " ") != 0);
 
             bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
             bool isHovered = GetPropA(pdis->hwndItem, "Hovered") != NULL;
 
-            char btnText[32] = { 0 };
-            GetWindowTextA(pdis->hwndItem, btnText, sizeof(btnText));
-
             COLORREF bgCol = isPressed ? RGB(16, 22, 34) : (isHovered ? RGB(32, 44, 66) : RGB(23, 31, 48));
             COLORREF borderCol = isHovered ? RGB(71, 85, 105) : RGB(45, 55, 75);
-            COLORREF rowIconColor = RGB(148, 163, 184);
-            COLORREF textCol = (g_controls[rowIdx].state == 2) ? rowIconColor : RGB(241, 245, 249);
+            COLORREF textCol = RGB(241, 245, 249);
 
-            wchar_t statusIcon = (g_controls[rowIdx].state == 2) ? L'\xE73E' : L'\xE7BA';
-            COLORREF statusIconColor = (g_controls[rowIdx].state == 2) ? RGB(59, 130, 246) : RGB(239, 68, 68);
-
+            // --- 3. RENDER CONTAINER (BACKGROUND & BORDER) ---
             HBRUSH hBrush = CreateSolidBrush(bgCol);
             FillRect(hdc, &pdis->rcItem, hBrush);
             DeleteObject(hBrush);
@@ -981,7 +1062,76 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
             RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 8, 8);
 
-            int dividerX = pdis->rcItem.left + 26;
+            // --- MODE A: ACTIVE LOADING SPINNER (3 VERTICAL EQUALIZER BARS / DONEWENFU STYLE) ---
+            if (isSpinning) {
+                SelectObject(hdc, hOldPen);
+                SelectObject(hdc, hOldBrush);
+                DeleteObject(hPen);
+
+                SetBkMode(hdc, TRANSPARENT);
+
+                INT_PTR frameIdx = (INT_PTR)GetPropA(pdis->hwndItem, "SpinnerFrameIndex");
+
+                // Exact center coordinates across the button
+                int cx = (pdis->rcItem.left + pdis->rcItem.right) / 2;
+                int cy = (pdis->rcItem.top + pdis->rcItem.bottom) / 2;
+
+                int barWidth = 4;
+                int barSpacing = 3;
+                int maxBarHeight = 14;
+                int totalWidth = (3 * barWidth) + (2 * barSpacing);
+                int startX = cx - (totalWidth / 2);
+
+                // Height ratios for each bar across an 8-frame wave sequence
+                static const float heightRatios[8][3] = {
+                    { 0.4f, 0.7f, 1.0f }, // Frame 0: Ascending scale
+                    { 0.2f, 0.5f, 0.8f }, // Frame 1
+                    { 0.5f, 0.3f, 0.5f }, // Frame 2
+                    { 0.8f, 0.4f, 0.3f }, // Frame 3
+                    { 1.0f, 0.7f, 0.4f }, // Frame 4: Descending scale
+                    { 0.8f, 0.9f, 0.6f }, // Frame 5
+                    { 0.5f, 1.0f, 0.8f }, // Frame 6: Center peak
+                    { 0.3f, 0.8f, 0.9f }  // Frame 7
+                };
+
+                int currentFrame = (int)(frameIdx % 8);
+
+                for (int i = 0; i < 3; i++) {
+                    float ratio = heightRatios[currentFrame][i];
+                    int currentHeight = static_cast<int>(maxBarHeight * ratio);
+
+                    int bx = startX + i * (barWidth + barSpacing);
+                    int by = cy - (currentHeight / 2);
+
+                    RECT rcBar = { bx, by, bx + barWidth, by + currentHeight };
+
+                    // Vibrant blue bar fill matching the theme palette
+                    HBRUSH hBarBrush = CreateSolidBrush(RGB(56, 189, 248));
+                    FillRect(hdc, &rcBar, hBarBrush);
+                    DeleteObject(hBarBrush);
+                }
+
+                return TRUE;
+            }
+
+            // --- MODE B: CHECK-ONLY BADGE (NO TEXT ASSIGNED) ---
+            if (!hasButtonText) {
+                SelectObject(hdc, hOldPen);
+                SelectObject(hdc, hOldBrush);
+                DeleteObject(hPen);
+
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, statusIconColor);
+                HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
+
+                DrawTextW(hdc, &statusIcon, 1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                SelectObject(hdc, hOldFont);
+                return TRUE;
+            }
+
+            // --- MODE C: DUAL-PANE BUTTON (DIVIDER + ICON + ACTION TEXT) ---
+            int dividerX = pdis->rcItem.left + 24;
             MoveToEx(hdc, dividerX, pdis->rcItem.top + 2, NULL);
             LineTo(hdc, dividerX, pdis->rcItem.bottom - 2);
 
@@ -990,14 +1140,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DeleteObject(hPen);
 
             SetBkMode(hdc, TRANSPARENT);
+
+            // Status Icon Badge
             SetTextColor(hdc, statusIconColor);
             HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontIcon);
-
-            // Left Status Badge Icon (Warning / Check)
-            RECT rcBadgeIcon = { pdis->rcItem.left, pdis->rcItem.top, dividerX, pdis->rcItem.bottom };
+            RECT rcBadgeIcon = { pdis->rcItem.left + 2, pdis->rcItem.top, dividerX, pdis->rcItem.bottom };
             DrawTextW(hdc, &statusIcon, 1, &rcBadgeIcon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // Button Text (Centered vertically directly next to the badge divider)
+            // Action Label
             SelectObject(hdc, g_hFontBold);
             SetTextColor(hdc, textCol);
             RECT rcActionText = { dividerX + 8, pdis->rcItem.top, pdis->rcItem.right - 2, pdis->rcItem.bottom };
@@ -1006,6 +1156,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SelectObject(hdc, hOldFont);
             return TRUE;
         }
+        
         return TRUE;
     }
 

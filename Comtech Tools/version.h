@@ -5,8 +5,8 @@ extern std::string g_appProductName;
 extern std::string g_appVersion;
 
 // 1. Define your version numbers here
-#define CSC_VERSION_MAJOR 4
-#define CSC_VERSION_MINOR 9
+#define CSC_VERSION_MAJOR 5
+#define CSC_VERSION_MINOR 0
 
 // 2. Helper macros to convert the numeric values into a string
 #define STRINGIZE_NX(A) #A

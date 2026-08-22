@@ -378,6 +378,7 @@ void ShowDarkMessageDialog(HWND hParent, const char* msg) {
 static bool g_passResult = false; 
 static std::string g_passMsg = ""; 
 static HWND g_hPassEdit = NULL; 
+static HWND g_hErrorText = NULL;
 
 // Subclass procedure for the Password Edit Box to handle the Enter key
 LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
@@ -392,104 +393,120 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+
+
 LRESULT CALLBACK PasswordWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
-        // Create the password input field
-        g_hPassEdit = CreateWindowExA(0, "EDIT", "", 
-            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_PASSWORD | ES_AUTOHSCROLL, 
-            42, 60, 200, 22, hwnd, (HMENU)3, NULL, NULL); 
+        // 1. Create the password input field
+        g_hPassEdit = CreateWindowExA(0, "EDIT", "",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_PASSWORD | ES_AUTOHSCROLL,
+            42, 50, 200, 22, hwnd, (HMENU)3, NULL, NULL);
 
-            // Apply font
-            SendMessageA(g_hPassEdit, WM_SETFONT, (WPARAM)g_hFontSub, TRUE); 
+        SendMessageA(g_hPassEdit, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
+        SetWindowSubclass(g_hPassEdit, EditSubclassProc, 0, 0);
 
-            // Subclass edit control to intercept the 'Enter' key
-            SetWindowSubclass(g_hPassEdit, EditSubclassProc, 0, 0);
+        // 2. Create the inline error text label right below the input field
+        g_hErrorText = CreateWindowA("STATIC", "",
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            15, 76, 255, 18, hwnd, (HMENU)4, NULL, NULL);
 
-        CreateWindowA("BUTTON", "Confirm", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 35, 100, 90, 30, hwnd, (HMENU)1, NULL, NULL); 
-            CreateWindowA("BUTTON", "Cancel", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 145, 100, 90, 30, hwnd, (HMENU)2, NULL, NULL); 
-            break;
+        SendMessageA(g_hErrorText, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
+
+        // 3. Action Buttons
+        CreateWindowA("BUTTON", "Confirm", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 35, 105, 90, 30, hwnd, (HMENU)1, NULL, NULL);
+        CreateWindowA("BUTTON", "Cancel", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 145, 105, 90, 30, hwnd, (HMENU)2, NULL, NULL);
+        break;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdcStatic = (HDC)wParam;
+        HWND hStaticWnd = (HWND)lParam;
+
+        // Render error text in Red with transparent background matching dark theme
+        if (hStaticWnd == g_hErrorText) {
+            SetTextColor(hdcStatic, COLOR_DANGER_RED);
+            SetBkMode(hdcStatic, TRANSPARENT);
+            return (LRESULT)g_hBrushBg;
+        }
+        break;
     }
     case WM_PAINT: {
         PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps); 
-            RECT rc; GetClientRect(hwnd, &rc); 
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
 
-            FillRect(hdc, &rc, g_hBrushBg); 
-            SetBkMode(hdc, TRANSPARENT); 
-            SetTextColor(hdc, COLOR_TEXT_WHITE); 
-            SelectObject(hdc, g_hFontSub); 
+        FillRect(hdc, &rc, g_hBrushBg);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontSub);
 
-            RECT textRc = { 15, 20, rc.right - 15, 55 }; 
-            DrawTextA(hdc, g_passMsg.c_str(), -1, &textRc, DT_CENTER | DT_WORDBREAK); 
+        RECT textRc = { 15, 18, rc.right - 15, 45 };
+        DrawTextA(hdc, g_passMsg.c_str(), -1, &textRc, DT_CENTER | DT_WORDBREAK);
 
-            EndPaint(hwnd, &ps); 
-            break;
+        EndPaint(hwnd, &ps);
+        break;
     }
     case WM_DRAWITEM: {
-        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam; 
-            HDC hdc = pdis->hDC; 
-            bool isConfirm = (pdis->CtlID == 1); 
+        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+        HDC hdc = pdis->hDC;
+        bool isConfirm = (pdis->CtlID == 1);
 
-            HBRUSH hBtnBrush = CreateSolidBrush(isConfirm ? COLOR_ACCENT_TEAL : COLOR_PANEL); 
-            FillRect(hdc, &pdis->rcItem, hBtnBrush); 
-            DeleteObject(hBtnBrush); 
+        HBRUSH hBtnBrush = CreateSolidBrush(isConfirm ? COLOR_ACCENT_TEAL : COLOR_PANEL);
+        FillRect(hdc, &pdis->rcItem, hBtnBrush);
+        DeleteObject(hBtnBrush);
 
-            HPEN hPen = CreatePen(PS_SOLID, 1, isConfirm ? COLOR_ACCENT_TEAL : COLOR_BORDER); 
-            SelectObject(hdc, hPen); 
-            SelectObject(hdc, GetStockObject(NULL_BRUSH)); 
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4); 
-            DeleteObject(hPen); 
+        HPEN hPen = CreatePen(PS_SOLID, 1, isConfirm ? COLOR_ACCENT_TEAL : COLOR_BORDER);
+        SelectObject(hdc, hPen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
+        DeleteObject(hPen);
 
-            SetBkMode(hdc, TRANSPARENT); 
-            SetTextColor(hdc, COLOR_TEXT_WHITE); 
-            SelectObject(hdc, g_hFontBold); 
-            DrawTextA(hdc, isConfirm ? "Confirm" : "Cancel", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE); 
-            return TRUE; 
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontBold);
+        DrawTextA(hdc, isConfirm ? "Confirm" : "Cancel", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return TRUE;
     }
     case WM_COMMAND: {
         if (LOWORD(wParam) == 1) {
-            
-            // Read password from edit control
-            char passBuffer[256] = { 0 }; 
-                GetWindowTextA(g_hPassEdit, passBuffer, sizeof(passBuffer)); 
+            char passBuffer[256] = { 0 };
+            GetWindowTextA(g_hPassEdit, passBuffer, sizeof(passBuffer));
 
-                if (strcmp(passBuffer, "Kdc5ea4k$") == 0) {
-                    
-                    g_passResult = true; 
-                        PostMessage(hwnd, WM_CLOSE, 0, 0); 
-                }
-                else {
-                    MessageBoxA(hwnd, "Incorrect Password", "Error", MB_ICONERROR | MB_OK); 
-                        // Focus back to edit box and select text for quick retry
-                        SetFocus(g_hPassEdit);
-                    SendMessage(g_hPassEdit, EM_SETSEL, 0, -1);
-                }
+            if (strcmp(passBuffer, "Kdc5ea4k$") == 0) {
+                g_passResult = true;
+                PostMessage(hwnd, WM_CLOSE, 0, 0);
+            }
+            else {
+                // Update inline text instead of showing MessageBox popup
+                SetWindowTextA(g_hErrorText, "Incorrect password. Please try again.");
+
+                // Refocus and highlight password input for re-entry
+                SetFocus(g_hPassEdit);
+                SendMessage(g_hPassEdit, EM_SETSEL, 0, -1);
+            }
         }
         if (LOWORD(wParam) == 2) {
-            
-            g_passResult = false; 
-                PostMessage(hwnd, WM_CLOSE, 0, 0); 
+            g_passResult = false;
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
         }
         break;
     }
     case WM_CLOSE: {
-        // Remove subclass before destruction
         RemoveWindowSubclass(g_hPassEdit, EditSubclassProc, 0);
 
-        HWND hParent = GetParent(hwnd); 
-            if (hParent) {
-                SendMessage(hParent, WM_SETREDRAW, FALSE, 0); 
-                    EnableWindow(hParent, TRUE); 
-                    SetForegroundWindow(hParent); 
-                    SendMessage(hParent, WM_SETREDRAW, TRUE, 0); 
-                    RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN); 
-            }
-        DestroyWindow(hwnd); 
-            break;
+        HWND hParent = GetParent(hwnd);
+        if (hParent) {
+            SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            EnableWindow(hParent, TRUE);
+            SetForegroundWindow(hParent);
+            SendMessage(hParent, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
+        DestroyWindow(hwnd);
+        break;
     }
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam); 
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 bool ShowDarkPasswordDialog(HWND hParent, const char* msg) {

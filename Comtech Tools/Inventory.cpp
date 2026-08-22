@@ -13,6 +13,8 @@
 #include "ConfirmDialog.h"
 #include "Theme.h"
 #include "Inventory.h"
+#include <lm.h>
+
 
 #include <comdef.h>
 #include <wbemidl.h>
@@ -21,6 +23,7 @@
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "netapi32.lib")
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -37,6 +40,21 @@ static bool g_inputDone = false;
 static bool g_inputCancelled = false;
 static HWND hEditDept = NULL;
 static HWND hLblError = NULL; // Error label handle
+
+static std::string GetDomainOrWorkgroup() {
+    LPWSTR pNameBuffer = NULL;
+    NETSETUP_JOIN_STATUS status;
+    std::string domainName = "N/A";
+
+    if (NetGetJoinInformation(NULL, &pNameBuffer, &status) == NERR_Success) {
+        if (pNameBuffer != NULL) {
+            _bstr_t bstrDomain(pNameBuffer);
+            domainName = (const char*)bstrDomain;
+            NetApiBufferFree(pNameBuffer);
+        }
+    }
+    return domainName;
+}
 
 static LRESULT CALLBACK DeptEditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
     if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
@@ -529,6 +547,7 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
     std::string model = ReadRegString(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\BIOS", "SystemProductName");
     std::string serial = GetSerialNumber();
     std::string cpu = ReadRegString(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString");
+    std::string domain = GetDomainOrWorkgroup();
 
     MEMORYSTATUSEX statex;
     statex.dwLength = sizeof(statex);
@@ -550,8 +569,8 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
 
     char systemDetailsBuf[1024];
     snprintf(systemDetailsBuf, sizeof(systemDetailsBuf),
-        "Device name: %s, Processor: %s, Installed RAM: %.2f GB, Windows Edition: %s, Windows Version: %s, OS Build: %s",
-        hostname.c_str(), cpu.c_str(), ramGb, osName.c_str(), displayVer.c_str(), buildNum.c_str());
+        "Device name: %s, Domain: %s, Processor: %s, Installed RAM: %.2f GB, Windows Edition: %s, Windows Version: %s, OS Build: %s",
+        hostname.c_str(), domain.c_str(), cpu.c_str(), ramGb, osName.c_str(), displayVer.c_str(), buildNum.c_str());
 
     std::string macAddresses = "";
     std::string ipAddresses = "";
