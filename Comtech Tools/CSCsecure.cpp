@@ -39,6 +39,8 @@
 #include "WinRARUtils.h"
 #include "ProgressBar.h"
 #include "Refresh.h"
+#include "MsOfficeUtils.h"
+#include <sys/stat.h>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -58,6 +60,11 @@ void UpdateSecureAllButtonText();
 
 std::string g_appProductName = "";
 std::string g_appVersion = "";
+
+
+
+
+
 
 // Retrieves a StringFileInfo entry from VS_VERSION_INFO in resources
 std::string GetFileVersionValue(const char* valueName) {
@@ -97,6 +104,8 @@ std::string GetFileVersionValue(const char* valueName) {
 
 float g_animatedSecureCount = 0.0f;
 static float g_targetSecureCount = 0.0f;
+
+
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -309,27 +318,27 @@ std::string script =
     }
 },
 
-        // 4. Shared Printers
-        {
-            "Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL, NULL, true, 2, false,
-            [](SecurityControl& ctrl) {
-                g_printerList = GetSystemPrintersInfo();
-                std::vector<std::string> sharedPrinters;
-                for (const auto& printer : g_printerList) {
-                    if (printer.isShared) {
-                        sharedPrinters.push_back(printer.shareName.empty() ? printer.name : printer.shareName);
-                    }
-                }
-                bool hasShared = !sharedPrinters.empty();
-                bool spoolerSecure = IsSpoolerClientConnectionsDisabled();
+// 4. Shared Printers
+{
+    "Shared Network Printers", "Auditing...", "Auditing...", "Secure", L'\xE749', NULL, NULL, true, 2, false,
+    [](SecurityControl& ctrl) {
+        g_printerList = GetSystemPrintersInfo();
+        std::vector<std::string> sharedPrinters;
+        for (const auto& printer : g_printerList) {
+            if (printer.isShared) {
+                sharedPrinters.push_back(printer.shareName.empty() ? printer.name : printer.shareName);
+            }
+        }
+        bool hasShared = !sharedPrinters.empty();
+        bool spoolerSecure = IsSpoolerClientConnectionsDisabled();
 
-                if (hasShared || !spoolerSecure) {
-                    if (hasShared) {
-                        if (sharedPrinters.size() == 1) ctrl.liveInfo = "Printer shared: " + sharedPrinters[0];
-                        else ctrl.liveInfo = "Multiple (" + std::to_string(sharedPrinters.size()) + ") shared printers detected.";
-                    }
- else {
-  ctrl.liveInfo = "Spooler remote RPC connections are allowed.";
+        if (hasShared || !spoolerSecure) {
+            if (hasShared) {
+                if (sharedPrinters.size() == 1) ctrl.liveInfo = "Printer shared: " + sharedPrinters[0];
+                else ctrl.liveInfo = "Multiple (" + std::to_string(sharedPrinters.size()) + ") shared printers detected.";
+            }
+else {
+ ctrl.liveInfo = "Spooler remote RPC connections are allowed.";
 }
 ctrl.statusLabel = "Warning";
 ctrl.state = 1;
@@ -477,7 +486,7 @@ else {
     },
     [](bool secure) { ConfigureNetworkSecPolicies(secure); }
 },
-// 11. WinRAR Archiver (Corrected Index 10)
+// 11. WinRAR Archiver
 {
     "WinRAR Archiver", "Auditing...", "Auditing...", "Install", L'\xE7B8', NULL, NULL, true, 2, false,
     [](SecurityControl& ctrl) {
@@ -487,47 +496,92 @@ else {
 
         if (winrarInstalled) {
             std::string verStr(winrarVer.begin(), winrarVer.end());
-            if (!latestVersion.empty() && IsVersionOlder(winrarVer, latestVersion)) {
+            if (!latestVersion.empty() && verStr != "Installed" && IsVersionOlder(winrarVer, latestVersion)) {
                 std::string latestStr(latestVersion.begin(), latestVersion.end());
                 ctrl.liveInfo = "WinRAR v" + verStr + " (Latest: v" + latestStr + ")";
                 ctrl.statusLabel = "Warning";
                 ctrl.state = 1;
                 ctrl.actionLabel = "Update";
             }
-else {
- ctrl.liveInfo = "WinRAR Installed (v" + verStr + ")";
- ctrl.statusLabel = "Secured";
- ctrl.state = 2;
- ctrl.actionLabel = "Inspect";
-}
-}
-else {
- ctrl.liveInfo = "WinRAR is not installed on this device.";
- ctrl.statusLabel = "Secured";
- ctrl.state = 2;
- ctrl.actionLabel = "Install";
-}
-},
-[](bool secure) {
-    // Check current button label to determine action instead of relying on 'secure'
-    char btnText[32] = { 0 };
-    if (g_controls[10].hBtnAction) {
-        GetWindowTextA(g_controls[10].hBtnAction, btnText, sizeof(btnText));
-    }
+            else {
+                ctrl.liveInfo = (verStr == "Installed") ? "WinRAR is installed." : "WinRAR Installed (v" + verStr + ")";
+                ctrl.statusLabel = "Secured";
+                ctrl.state = 2;
+                ctrl.actionLabel = "Inspect";
+            }
+        }
+        else {
+            ctrl.liveInfo = "WinRAR is not installed on this device.";
+            ctrl.statusLabel = "Secured";
+            ctrl.state = 2;
+            ctrl.actionLabel = "Install";
+        }
+    },
+    [](bool secure) {
+        char btnText[32] = { 0 };
+        if (g_controls[10].hBtnAction) {
+            GetWindowTextA(g_controls[10].hBtnAction, btnText, sizeof(btnText));
+        }
 
-    if (std::string(btnText) == "Inspect") {
-        ShellExecuteA(g_hMainWnd, "open", "control.exe", "appwiz.cpl", NULL, SW_SHOWNORMAL);
+        if (std::string(btnText) == "Inspect") {
+            ShellExecuteA(g_hMainWnd, "open", "control.exe", "appwiz.cpl", NULL, SW_SHOWNORMAL);
+        }
+        else {
+            InstallLatestWinRAR();
+        }
     }
-    else {
-        // Triggers for "Install" or "Update"
-        InstallLatestWinRAR();
-    }
-}
-}
-    };
+},
+        {
+            "Microsoft Office", "Auditing...", "Auditing...", "Install", L'\xE804', NULL, NULL, true, 2, false,
+            [](SecurityControl& ctrl) {
+                int officeYear = 0;
+                std::wstring versionStr;
+                bool installed = GetInstalledOfficeVersion(officeYear, versionStr);
+                std::string nameStr(versionStr.begin(), versionStr.end());
+
+                if (!installed) {
+                    ctrl.liveInfo = "MS Office is not installed on this device.";
+                    ctrl.statusLabel = "Warning";
+                    ctrl.state = 1;
+                    ctrl.actionLabel = "Install";
+                }
+                else if (officeYear <= 2021) {
+                    ctrl.liveInfo = nameStr + " installed (Required: 2024 or higher).";
+                    ctrl.statusLabel = "Warning";
+                    ctrl.state = 1;
+                    ctrl.actionLabel = "Install";
+                }
+                else {
+                    ctrl.liveInfo = nameStr + " is installed.";
+                    ctrl.statusLabel = "Secured";
+                    ctrl.state = 2;
+                    ctrl.actionLabel = "Inspect";
+                }
+            },
+            [](bool secure) {
+                char btnText[32] = { 0 };
+                if (g_controls[11].hBtnAction) {
+                    GetWindowTextA(g_controls[11].hBtnAction, btnText, sizeof(btnText));
+                }
+
+                if (std::string(btnText) == "Inspect") {
+                    ShellExecuteA(g_hMainWnd, "open", "control.exe", "appwiz.cpl", NULL, SW_SHOWNORMAL);
+                }
+         else {
+                    // Triggers uninstall of old version and install of Office 2024
+                    InstallOffice2024();
+                }
+            }
+        } };
+    
+
+
+
 
     g_totalControls = static_cast<int>(g_controls.size());
 }
+
+
 
 void UpdateSecureAllButtonText() {
     int unsecureCount = 0;
@@ -652,6 +706,24 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+
+void ResizeToFitControls(HWND hwnd) {
+    int startY = 55;
+    int rowHeight = 38;
+    int bottomPadding = 15;
+
+    // Calculate required client area height
+    int clientHeight = startY + (static_cast<int>(g_controls.size()) * rowHeight) + bottomPadding;
+
+    // Adjust for window frame (title bar & borders)
+    RECT rc = { 0, 0, 690, clientHeight };
+    AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
+
+    // Apply the new window dimensions
+    SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
 // --- MAIN WINDOW PROC ---
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -690,6 +762,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         InitTheme();
         LoadVersionInfoFromResource();
         InitializeControls(); // Initialize central registry
+        ResizeToFitControls(hwnd);
         CreateRefreshButton(hwnd);
 
         g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
@@ -748,12 +821,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         // Corner radius for rounded panels (ellipse width/height)
         int cornerRadius = 16;
+        // Dynamic bottom edge based on control count
+        int cardBottom = 55 + (static_cast<int>(g_controls.size()) * 38) + 10;
 
         // Left Control Panel Card
-        RoundRect(hdc, 10, 10, 475, height - 10, cornerRadius, cornerRadius);
+        RoundRect(hdc, 10, 10, 475, cardBottom, cornerRadius, cornerRadius);
 
-        // Right Side Panel Card (Aligned with 10px outer margin on right)
-        RoundRect(hdc, 485, 10, width - 10, height - 10, cornerRadius, cornerRadius);
+        // Right Side Panel Card
+        RoundRect(hdc, 480, 10, width - 10, cardBottom, cornerRadius, cornerRadius);
 
         // Cleanup drawing objects
         SelectObject(hdc, hOldBrush);
@@ -860,7 +935,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 std::string action = ctrl.actionLabel;
 
                 // ASK FOR CREDENTIALS FIRST
-                if (isSecured && action != "Inspect" && action != "Open") {
+                if (isSecured && action != "Inspect" && action != "Open" && action != "Install") {
                     if (!ShowDarkPasswordDialog(hwnd, "Enter administrator password to continue:")) {
                         return 0; // User canceled or password failed — stop execution!
                     }
@@ -1209,11 +1284,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     std::string windowTitle = g_appProductName + " v" + g_appVersion;
     if (g_appProductName.empty()) windowTitle += "CSCsecure";
 
+
     HWND hwnd = CreateWindowExA(
         0,
         "CSCsecureMainClass", windowTitle.c_str(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 700, 600,
+        CW_USEDEFAULT, CW_USEDEFAULT, 706, 600,
         NULL, NULL, hInstance, NULL
     );
 

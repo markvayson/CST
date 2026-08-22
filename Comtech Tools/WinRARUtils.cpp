@@ -7,52 +7,90 @@
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "urlmon.lib")
 
-// Retrieves installed WinRAR version from Registry
+// Retrieves installed WinRAR version from Registry with registry fallback
 bool GetWinRARVersion(std::wstring& outVersion) {
     HKEY hKey = NULL;
-    const wchar_t* regPath = L"SOFTWARE\\WinRAR";
 
-    LONG result = RegOpenKeyExW(HKEY_LOCAL_MACHINE, regPath, 0, KEY_READ | KEY_WOW64_64KEY, &hKey);
-    if (result != ERROR_SUCCESS) {
-        result = RegOpenKeyExW(HKEY_LOCAL_MACHINE, regPath, 0, KEY_READ | KEY_WOW64_32KEY, &hKey);
-    }
-
-    if (result == ERROR_SUCCESS) {
-        wchar_t verBuffer[128] = { 0 };
-        DWORD dataSize = sizeof(verBuffer);
-        DWORD dataType = 0;
-
-        result = RegQueryValueExW(hKey, L"Version", NULL, &dataType, (LPBYTE)verBuffer, &dataSize);
-        RegCloseKey(hKey);
-
-        if (result == ERROR_SUCCESS && (dataType == REG_SZ || dataType == REG_EXPAND_SZ)) {
-            outVersion = verBuffer;
-            return true;
-        }
-    }
-
-    const wchar_t* uninstallPaths[] = {
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver",
-        L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver"
+    // Check HKLM (64-bit and 32-bit) & HKCU
+    struct RegTarget {
+        HKEY root;
+        const wchar_t* path;
+        REGSAM sam;
+    } targets[] = {
+        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WinRAR", KEY_READ | KEY_WOW64_64KEY },
+        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WinRAR", KEY_READ | KEY_WOW64_32KEY },
+        { HKEY_CURRENT_USER,  L"SOFTWARE\\WinRAR", KEY_READ },
+        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver", KEY_READ },
+        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver", KEY_READ },
+        { HKEY_CURRENT_USER,  L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver", KEY_READ }
     };
 
-    for (const auto& path : uninstallPaths) {
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+    for (const auto& target : targets) {
+        if (RegOpenKeyExW(target.root, target.path, 0, target.sam, &hKey) == ERROR_SUCCESS) {
             wchar_t verBuffer[128] = { 0 };
             DWORD dataSize = sizeof(verBuffer);
             DWORD dataType = 0;
 
-            result = RegQueryValueExW(hKey, L"DisplayVersion", NULL, &dataType, (LPBYTE)verBuffer, &dataSize);
-            RegCloseKey(hKey);
+            // Try "Version" key first, then "DisplayVersion" for Uninstall entries
+            if (RegQueryValueExW(hKey, L"Version", NULL, &dataType, (LPBYTE)verBuffer, &dataSize) == ERROR_SUCCESS ||
+                RegQueryValueExW(hKey, L"DisplayVersion", NULL, &dataType, (LPBYTE)verBuffer, &dataSize) == ERROR_SUCCESS) {
 
-            if (result == ERROR_SUCCESS && (dataType == REG_SZ || dataType == REG_EXPAND_SZ)) {
-                outVersion = verBuffer;
-                return true;
+                RegCloseKey(hKey);
+                if (dataType == REG_SZ || dataType == REG_EXPAND_SZ) {
+                    outVersion = verBuffer;
+                    return true;
+                }
             }
+            RegCloseKey(hKey);
         }
     }
 
     return false;
+}
+
+// Dynamic Download & Silent Installation with Registry Verification Retry
+void InstallLatestWinRAR() {
+    char tempPath[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempPath);
+    std::string installerPath = std::string(tempPath) + "winrar_setup.exe";
+
+    std::wstring latestVer = GetLatestWinRARVersionOnline();
+    std::string downloadUrl = "https://www.rarlab.com/rar/winrar-x64-723.exe"; // Fallback default
+
+    if (!latestVer.empty()) {
+        int major = 0, minor = 0;
+        swscanf_s(latestVer.c_str(), L"%d.%d", &major, &minor);
+        if (major > 0 && minor >= 0) {
+            char urlBuf[256];
+            snprintf(urlBuf, sizeof(urlBuf), "https://www.rarlab.com/rar/winrar-x64-%d%02d.exe", major, minor);
+            downloadUrl = urlBuf;
+        }
+    }
+
+    HRESULT hr = URLDownloadToFileA(NULL, downloadUrl.c_str(), installerPath.c_str(), 0, NULL);
+    if (SUCCEEDED(hr)) {
+        SHELLEXECUTEINFOA sei = { sizeof(sei) };
+        sei.cbSize = sizeof(sei);
+        sei.lpVerb = "runas";
+        sei.lpFile = installerPath.c_str();
+        sei.lpParameters = "/S";
+        sei.nShow = SW_HIDE;
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+
+        if (ShellExecuteExA(&sei) && sei.hProcess) {
+            WaitForSingleObject(sei.hProcess, INFINITE);
+            CloseHandle(sei.hProcess);
+        }
+    }
+
+    // Polling retry loop: Wait up to 5 seconds for registry to register the newly installed version
+    std::wstring verifiedVer;
+    for (int i = 0; i < 10; ++i) {
+        Sleep(500);
+        if (GetWinRARVersion(verifiedVer)) {
+            break;
+        }
+    }
 }
 
 // Fetch highest version string from RARLab download page
@@ -134,44 +172,4 @@ bool IsVersionOlder(const std::wstring& installed, const std::wstring& latest) {
     if (instMajor < latMajor) return true;
     if (instMajor == latMajor && instMinor < latMinor) return true;
     return false;
-}
-
-// Dynamic Download & Silent Installation
-void InstallLatestWinRAR() {
-    char tempPath[MAX_PATH];
-    GetTempPathA(MAX_PATH, tempPath);
-    std::string installerPath = std::string(tempPath) + "winrar_setup.exe";
-
-    std::wstring latestVer = GetLatestWinRARVersionOnline();
-    std::string downloadUrl = "https://www.rarlab.com/rar/winrar-x64-723.exe"; // Fallback default
-
-    if (!latestVer.empty()) {
-        int major = 0, minor = 0;
-        swscanf_s(latestVer.c_str(), L"%d.%d", &major, &minor);
-        if (major > 0 && minor >= 0) {
-            char urlBuf[256];
-            snprintf(urlBuf, sizeof(urlBuf), "https://www.rarlab.com/rar/winrar-x64-%d%02d.exe", major, minor);
-            downloadUrl = urlBuf;
-        }
-    }
-
-    HRESULT hr = URLDownloadToFileA(NULL, downloadUrl.c_str(), installerPath.c_str(), 0, NULL);
-    if (SUCCEEDED(hr)) {
-        SHELLEXECUTEINFOA sei = { sizeof(sei) };
-        sei.cbSize = sizeof(sei);
-        sei.lpVerb = "runas";
-        sei.lpFile = installerPath.c_str();
-        sei.lpParameters = "/S";
-        sei.nShow = SW_HIDE;
-        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-
-        if (ShellExecuteExA(&sei) && sei.hProcess) {
-            // Block execution thread until installer exits
-            WaitForSingleObject(sei.hProcess, INFINITE);
-            CloseHandle(sei.hProcess);
-        }
-    }
-
-    // Give Registry 1 second to finalize writing values
-    Sleep(1000);
 }
