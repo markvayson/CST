@@ -5,8 +5,7 @@
 #include <vector>
 #include <string>
 
-// Forward declarations for external logging and helper functions
-void LogMessage(const std::string& msg);
+
 bool RestartWin32Service(const char* serviceName);
 
 std::vector<PrinterStatus> GetSystemPrintersInfo() {
@@ -57,29 +56,18 @@ void SetSpoolerClientConnectionsPolicy(bool disableConnections) {
         if (disableConnections) {
             DWORD value = 2;
             RegSetValueExW(hKey, L"RegisterSpoolerRemoteRpcEndPoint", 0, REG_DWORD, (const BYTE*)&value, sizeof(value));
-            LogMessage("Policy 'Allow Print Spooler to accept client connections' set to Disabled.");
         }
         else {
             RegDeleteValueW(hKey, L"RegisterSpoolerRemoteRpcEndPoint");
-            LogMessage("Policy 'Allow Print Spooler to accept client connections' reverted to Not Configured.");
-        }
+       }
         RegCloseKey(hKey);
     }
     else {
-        LogMessage("Failed to open or create registry key for Printer policies. Run as Administrator.");
         return;
     }
 
-    LogMessage("Refreshing machine policy natively...");
     RefreshPolicyEx(TRUE, RP_FORCE);
 
-    LogMessage("Restarting Print Spooler service natively...");
-    if (RestartWin32Service("Spooler")) {
-        LogMessage("Spooler client connection policy applied successfully.");
-    }
-    else {
-        LogMessage("Failed to restart Spooler service natively.");
-    }
 }
 
 void UnshareAllPrinters() {
@@ -103,17 +91,12 @@ void UnshareAllPrinters() {
 
                     if (!SetPrinterA(hPrinter, 2, (LPBYTE)&pPrinterInfo[i], 0)) {
                         DWORD err = GetLastError();
-                        LogMessage("Failed to unshare printer: " + std::string(pPrinterInfo[i].pPrinterName) + " Error code: " + std::to_string(err));
-                    }
-                    else {
-                        LogMessage("Successfully unshared printer: " + std::string(pPrinterInfo[i].pPrinterName));
                     }
                     ClosePrinter(hPrinter);
                 }
                 else {
                     DWORD err = GetLastError();
-                    LogMessage("Failed to open printer: " + std::string(pPrinterInfo[i].pPrinterName) + " Error code: " + std::to_string(err));
-                }
+               }
             }
         }
     }

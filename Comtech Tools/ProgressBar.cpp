@@ -1,81 +1,123 @@
 #include "ProgressBar.h"
+#include <windows.h>
+#include <gdiplus.h>
+#include <algorithm>
+#include <cmath>
 
-// Define Global Direct2D Resources
-ID2D1Factory* pD2DFactory = nullptr;
-ID2D1HwndRenderTarget* pRenderTarget = nullptr;
-ID2D1SolidColorBrush* pActiveBrush = nullptr;
-ID2D1SolidColorBrush* pInactiveBrush = nullptr;
+#pragma comment(lib, "gdiplus.lib")
 
-// Initialize Direct2D Resources
-void InitD2D(HWND hwnd) {
-    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
+using namespace Gdiplus;
 
-    RECT rc;
-    GetClientRect(hwnd, &rc);
+static ULONG_PTR g_gdiplusToken = 0;
 
-    pD2DFactory->CreateHwndRenderTarget(
-        D2D1::RenderTargetProperties(),
-        D2D1::HwndRenderTargetProperties(hwnd, D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top)),
-        &pRenderTarget
-    );
-
-    // Active Chevron Accent (Electric Blue)
-    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0x00, 0x66, 0xFF), &pActiveBrush);
-    // Track Background Chevron
-    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0x1E, 0x29, 0x3B), &pInactiveBrush);
-}
-
-// Release Direct2D Resources
-void CleanupD2D() {
-    if (pActiveBrush) { pActiveBrush->Release(); pActiveBrush = nullptr; }
-    if (pInactiveBrush) { pInactiveBrush->Release(); pInactiveBrush = nullptr; }
-    if (pRenderTarget) { pRenderTarget->Release(); pRenderTarget = nullptr; }
-    if (pD2DFactory) { pD2DFactory->Release(); pD2DFactory = nullptr; }
-}
-
-void DrawChevronProgressBar(int totalSegments, int completedSegments, D2D1_RECT_F rect) {
-    if (!pRenderTarget) return;
-
-    pRenderTarget->BeginDraw();
-
-    // REMOVE THIS LINE: pRenderTarget->Clear(D2D1::ColorF(0, 0.0f));
-
-    float totalWidth = rect.right - rect.left;
-    float height = rect.bottom - rect.top;
-    float segmentGap = 4.0f;
-    float segmentWidth = (totalWidth - (segmentGap * (totalSegments - 1))) / totalSegments;
-    float arrowOffset = height * 0.35f;
-
-    for (int i = 0; i < totalSegments; ++i) {
-        float xLeft = rect.left + i * (segmentWidth + segmentGap);
-        float xRight = xLeft + segmentWidth;
-
-        ID2D1PathGeometry* pPathGeometry = nullptr;
-        ID2D1GeometrySink* pSink = nullptr;
-
-        pD2DFactory->CreatePathGeometry(&pPathGeometry);
-        pPathGeometry->Open(&pSink);
-
-        // Define Chevron Polygon Points
-        pSink->BeginFigure(D2D1::Point2F(xLeft, rect.top), D2D1_FIGURE_BEGIN_FILLED);
-        pSink->AddLine(D2D1::Point2F(xRight - arrowOffset, rect.top));
-        pSink->AddLine(D2D1::Point2F(xRight, rect.top + (height / 2.0f)));
-        pSink->AddLine(D2D1::Point2F(xRight - arrowOffset, rect.bottom));
-        pSink->AddLine(D2D1::Point2F(xLeft, rect.bottom));
-        if (i > 0) {
-            pSink->AddLine(D2D1::Point2F(xLeft + arrowOffset, rect.top + (height / 2.0f)));
-        }
-        pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
-        pSink->Close();
-
-        ID2D1SolidColorBrush* currentBrush = (i < completedSegments) ? pActiveBrush : pInactiveBrush;
-        pRenderTarget->FillGeometry(pPathGeometry, currentBrush);
-
-        pSink->Release();
-        pPathGeometry->Release();
+void InitGdiplusIfNeeded() {
+    if (g_gdiplusToken == 0) {
+        GdiplusStartupInput input;
+        GdiplusStartup(&g_gdiplusToken, &input, NULL);
     }
-
-    pRenderTarget->EndDraw();
 }
 
+void RenderProgressBar(HDC hdc, int totalControls, float animatedSecureCount, int percentMet) {
+    if (totalControls <= 0) return;
 
+    InitGdiplusIfNeeded();
+
+    Graphics graphics(hdc);
+    // AntiAlias for clean diagonal edges + Half pixel offset for sharp subpixel alignment
+    graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
+
+    // Track bounds
+    RectF rcTrack(150.0f, 23.0f, 245.0f, 16.0f);
+
+    SolidBrush trackBgBrush(Color(255, 15, 23, 42));
+    graphics.FillRectangle(&trackBgBrush, rcTrack);
+
+    Color activeColor;
+    if (percentMet >= 100)      activeColor = Color(255, 13, 148, 136);
+    else if (percentMet >= 50) activeColor = Color(255, 59, 130, 246);
+    else                       activeColor = Color(255, 248, 113, 113);
+
+    Color bgSegColor(255, 30, 41, 59);
+
+    float arrowDepth = 8.0f;
+    float gap = 2.0f;
+    float radius = 3.0f;
+    float diameter = radius * 2.0f;
+
+    float totalGaps = (totalControls - 1) * gap;
+    float segWidth = (rcTrack.Width - totalGaps - arrowDepth) / static_cast<float>(totalControls);
+
+    for (int i = 0; i < totalControls; i++) {
+        float x = rcTrack.X + (i * (segWidth + gap));
+        float top = rcTrack.Y;
+        float bottom = rcTrack.Y + rcTrack.Height;
+        float centerY = top + (rcTrack.Height / 2.0f);
+
+        GraphicsPath path;
+        bool isFirst = (i == 0);
+        bool isLast = (i == totalControls - 1);
+
+        if (isFirst && isLast) {
+            path.AddArc(x, top, diameter, diameter, 180, 90);
+            path.AddArc(x + segWidth + arrowDepth - diameter, top, diameter, diameter, 270, 90);
+            path.AddArc(x + segWidth + arrowDepth - diameter, bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(x, bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+        }
+        else if (isFirst) {
+            path.AddArc(x, top, diameter, diameter, 180, 90);
+            path.AddLine(x + radius, top, x + segWidth, top);
+            path.AddLine(x + segWidth, top, x + segWidth + arrowDepth, centerY);
+            path.AddLine(x + segWidth + arrowDepth, centerY, x + segWidth, bottom);
+            path.AddLine(x + segWidth, bottom, x + radius, bottom);
+            path.AddArc(x, bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+        }
+        else if (isLast) {
+            float rightX = x + segWidth + arrowDepth;
+            path.AddLine(x, top, rightX - radius, top);
+            path.AddArc(rightX - diameter, top, diameter, diameter, 270, 90);
+            path.AddArc(rightX - diameter, bottom - diameter, diameter, diameter, 0, 90);
+            path.AddLine(rightX - radius, bottom, x, bottom);
+            path.AddLine(x, bottom, x + arrowDepth, centerY);
+            path.CloseFigure();
+        }
+        else {
+            path.AddLine(x, top, x + segWidth, top);
+            path.AddLine(x + segWidth, top, x + segWidth + arrowDepth, centerY);
+            path.AddLine(x + segWidth + arrowDepth, centerY, x + segWidth, bottom);
+            path.AddLine(x + segWidth, bottom, x, bottom);
+            path.AddLine(x, bottom, x + arrowDepth, centerY);
+            path.CloseFigure();
+        }
+
+        // Determine segment active state
+        float segmentFill = animatedSecureCount - static_cast<float>(i);
+        segmentFill = (std::max)(0.0f, (std::min)(1.0f, segmentFill));
+
+        // Draw segment directly in solid active color or inactive background color (no clip masking blur)
+        if (segmentFill >= 1.0f) {
+            SolidBrush activeBrush(activeColor);
+            graphics.FillPath(&activeBrush, &path);
+        }
+        else if (segmentFill > 0.0f) {
+            // Partial animation state: draw background path first, then clip fill
+            SolidBrush segBgBrush(bgSegColor);
+            graphics.FillPath(&segBgBrush, &path);
+
+            float maxRightExtent = x + segWidth + arrowDepth;
+            float fillRight = x + ((maxRightExtent - x) * segmentFill);
+
+            graphics.SetClip(&path);
+            SolidBrush activeBrush(activeColor);
+            RectF fillRect(x, top, fillRight - x, rcTrack.Height);
+            graphics.FillRectangle(&activeBrush, fillRect);
+            graphics.ResetClip();
+        }
+        else {
+            SolidBrush segBgBrush(bgSegColor);
+            graphics.FillPath(&segBgBrush, &path);
+        }
+    }
+}

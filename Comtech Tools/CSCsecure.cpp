@@ -37,6 +37,8 @@
 #include "LocalAccounts.h"
 #include "NetworkSecPolicies.h"
 #include "WinRARUtils.h"
+#include "ProgressBar.h"
+#include "Refresh.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -49,8 +51,6 @@
 
 
 
-// Function Declarations
-void LogMessage(const std::string& msg);
 void UpdateStatus(const std::string& msg);
 void PerformAuditAndHighlight();
 void UpdateSecureAllButtonText();
@@ -95,6 +95,9 @@ std::string GetFileVersionValue(const char* valueName) {
     return "";
 }
 
+float g_animatedSecureCount = 0.0f;
+static float g_targetSecureCount = 0.0f;
+
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
@@ -107,6 +110,7 @@ std::string GetFileVersionValue(const char* valueName) {
 #define ID_CHK_BASE          4000
 #define ID_CHK_SELECT_ALL    4099
 #define WM_SHOW_RESTART_PROMPT (WM_USER + 100)
+#define TIMER_PROGRESS_ANIM 101
 
 HWND g_hChkSelectAll = NULL;
 HWND g_hMainWnd = NULL;
@@ -179,10 +183,7 @@ void ExecuteButtonActionWithSpinner(HWND hBtn, std::function<void()> action, std
         EnableWindow(hBtn, TRUE);
 
         // Refresh UI & audit state
-        if (g_hMainWnd) {
-            PostMessage(g_hMainWnd, WM_COMMAND, MAKEWPARAM(0, 0), 0);
-            PerformAuditAndHighlight();
-        }
+        PerformAuditAndHighlight();
         }).detach();
 }
 bool RestartWin32Service(const char* serviceName) {
@@ -582,42 +583,12 @@ void PerformAuditAndHighlight() {
     }
 
     UpdateSecureAllButtonText();
-    if (g_hMainWnd) {
-        int calculatedPercent = (g_totalControls > 0) ? (g_secureCount * 100 / g_totalControls) : 0;
-       
-    }
-}
-
-void LogMessage(const std::string& msg) {
-    time_t rawtime;
-    struct tm timeinfo;
-    char timeBuffer[64];
-
-    time(&rawtime);
-    localtime_s(&timeinfo, &rawtime);
-    strftime(timeBuffer, sizeof(timeBuffer), "[%Y-%m-%d %H:%M:%S] ", &timeinfo);
-
-    std::string formattedLog = std::string(timeBuffer) + msg;
-    g_logMemory.push_back(formattedLog);
-
-    std::ofstream logFile("FastSystemSecurity.log", std::ios::app);
-    if (logFile.is_open()) {
-        logFile << formattedLog << std::endl;
-        logFile.close();
-    }
-
-    if (g_hLogEdit && IsWindow(g_hLogEdit)) {
-        std::string fullLogText = "";
-        for (const auto& line : g_logMemory) fullLogText += line + "\r\n";
-        SetWindowTextA(g_hLogEdit, fullLogText.c_str());
-        SendMessageA(g_hLogEdit, EM_SETSEL, (WPARAM)fullLogText.length(), (LPARAM)fullLogText.length());
-        SendMessageA(g_hLogEdit, EM_SCROLLCARET, 0, 0);
-    }
+    g_targetSecureCount = static_cast<float>(g_secureCount);
+    SetTimer(g_hMainWnd, TIMER_PROGRESS_ANIM, 16, NULL);
 }
 
 void UpdateStatus(const std::string& msg) {
     g_statusText = msg;
-    LogMessage(msg);
     if (g_hMainWnd) {
         RedrawWindow(g_hMainWnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     }
@@ -632,6 +603,8 @@ void LoadVersionInfoFromResource() {
 
 LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
     switch (uMsg) {
+    case WM_ERASEBKGND:
+        return 1;
     case WM_MOUSEMOVE:
         if (!GetPropA(hWnd, "Hovered")) {
             SetPropA(hWnd, "Hovered", (HANDLE)1);
@@ -682,6 +655,23 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 // --- MAIN WINDOW PROC ---
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
+    case WM_TIMER:
+        if (wParam == TIMER_PROGRESS_ANIM) {
+            float diff = g_targetSecureCount - g_animatedSecureCount;
+
+            // Easing interpolation step
+            if (fabsf(diff) > 0.01f) {
+                g_animatedSecureCount += diff * 0.15f; // Adjust speed (0.15f = smooth ease-out)
+            }
+            else {
+                g_animatedSecureCount = g_targetSecureCount;
+                KillTimer(hwnd, TIMER_PROGRESS_ANIM); // Stop timer when reached
+            }
+
+            RECT rcProgressRegion = { 150, 12, 470, 48 };
+            InvalidateRect(hwnd, &rcProgressRegion, FALSE);
+        }
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     case WM_SHOW_RESTART_PROMPT: {
@@ -700,6 +690,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         InitTheme();
         LoadVersionInfoFromResource();
         InitializeControls(); // Initialize central registry
+        CreateRefreshButton(hwnd);
 
         g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
         g_hFontSub = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
@@ -769,15 +760,40 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SelectObject(hdc, hOldPen);
         DeleteObject(hPanelSurfaceBrush);
 
-        
+        SelectObject(hdc, g_hFontTitle);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        RECT rcTitle = { 20, 20, 150, 40 };
+        DrawTextA(hdc, "System Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+       
+        int percentMet = (g_totalControls > 0)
+            ? static_cast<int>(std::round((g_animatedSecureCount * 100.0f) / static_cast<float>(g_totalControls)))
+            : 0;
+
+        RenderProgressBar(hdc, g_totalControls, g_animatedSecureCount, percentMet);
+
+
+        // Dynamic Color based on completion state
+        COLORREF percentColor;
+        if (percentMet >= 100)      percentColor = RGB(45, 212, 191); // Teal / Green
+        else if (percentMet >= 50) percentColor = RGB(96, 165, 250); // Accent Blue
+        else                       percentColor = RGB(248, 113, 113); // Soft Red
+
+        SetTextColor(hdc, percentColor);
+
+        char progText[16];
+        snprintf(progText, sizeof(progText), "%d%%", percentMet);
+        RECT rcProgText = { 405, 20, 440, 42 };
+        DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         // 4. Render Individual Controls
         int startY = 55;
         int rowHeight = 38;
 
         for (size_t i = 0; i < g_controls.size(); i++) {
+            int savedDC = SaveDC(hdc);
             // Check hover status for dynamic accent styling
+
             bool isRowActive = g_controls[i].isHovered;
 
             // Optional Glow/Round Highlight Circle behind the Left Icon when Hovered
@@ -814,8 +830,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetTextColor(hdc, RGB(148, 163, 184));
             RECT rcInfo = { 48, startY + 18, 330, startY + 36 };
             DrawTextA(hdc, g_controls[i].liveInfo.c_str(), -1, &rcInfo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-            RestoreDC(hdc, -1);
+            RestoreDC(hdc, savedDC);
             startY += rowHeight;
         }
             
@@ -829,7 +844,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
     case WM_COMMAND: {
+
         int wmId = LOWORD(wParam);
+        if (wmId == ID_BTN_REFRESH) {
+            ExecuteAppRefresh(hwnd);
+            return 0;
+        }
 
 
         if (wmId >= ID_HARD_BASE && wmId < ID_HARD_BASE + (int)(g_controls.size() * 10)) {
@@ -1017,6 +1037,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
     case WM_DRAWITEM: {
         LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+        if (DrawRefreshButton(pdis)) {
+            return TRUE;
+        }
 
         if (IsSidebarButton(pdis->CtlID)) {
             DrawSidebarButton(pdis);
@@ -1187,7 +1210,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     if (g_appProductName.empty()) windowTitle += "CSCsecure";
 
     HWND hwnd = CreateWindowExA(
-        WS_EX_COMPOSITED,
+        0,
         "CSCsecureMainClass", windowTitle.c_str(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 700, 600,

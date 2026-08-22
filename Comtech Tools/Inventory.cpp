@@ -671,8 +671,6 @@ static bool CollectAssetInventory(const std::string& hostname, const std::string
 }
 
 
-// Declare external logging functions from CSCsecure.cpp
-extern void LogMessage(const std::string& msg);
 extern void UpdateStatus(const std::string& msg);
 
 // --- THREAD PROCEDURE ---
@@ -708,11 +706,9 @@ static DWORD WINAPI InventoryThreadProc(LPVOID lpParam) {
     if (swCount > 0 || assetSuccess) {
         snprintf(msgBuf, sizeof(msgBuf), "Inventory collection completed successfully! Applications Logged: %d (Saved in \\Inventory Folder)", swCount);
         UpdateStatus(msgBuf);
-        LogMessage(msgBuf);
     }
     else {
         UpdateStatus("Failed to complete inventory collection.");
-        LogMessage("Failed to complete inventory collection.");
     }
 
     return 0;

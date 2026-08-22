@@ -170,9 +170,11 @@
     <ClInclude Include="IISCrypto.h" />
     <ClInclude Include="Inventory.h" />
     <ClInclude Include="LocalAccounts.h" />
+    <ClInclude Include="Logger.h" />
     <ClInclude Include="NetworkSecPolicies.h" />
     <ClInclude Include="NetworkPrinters.h" />
     <ClInclude Include="ProgressBar.h" />
+    <ClInclude Include="Refresh.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="SearchPass.h" />
     <ClInclude Include="SharedFolders.h" />
@@ -194,9 +196,11 @@
     <ClCompile Include="IISCrypto.cpp" />
     <ClCompile Include="Inventory.cpp" />
     <ClCompile Include="LocalAccounts.cpp" />
+    <ClCompile Include="Logger.cpp" />
     <ClCompile Include="NetworkPrinters.cpp" />
     <ClCompile Include="NetworkSecPolicies.cpp" />
     <ClCompile Include="ProgressBar.cpp" />
+    <ClCompile Include="Refresh.cpp" />
     <ClCompile Include="SearchPass.cpp" />
     <ClCompile Include="SharedFolders.cpp" />
     <ClCompile Include="Sidebar.cpp" />

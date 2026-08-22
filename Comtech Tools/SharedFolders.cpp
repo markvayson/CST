@@ -4,8 +4,6 @@
 
 #pragma comment(lib, "netapi32.lib")
 
-// Forward declaration for external logging if defined elsewhere in the project
-void LogMessage(const std::string& msg);
 
 bool GetSystemSharedFoldersInfo(std::string& outShareNames) {
     PSHARE_INFO_1 pBuf = NULL, pTmpBuf = NULL;
@@ -56,12 +54,7 @@ void UnshareAllFolders() {
                         char nameA[256] = { 0 };
                         WideCharToMultiByte(CP_ACP, 0, wShareName.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
 
-                        if (delRes == NERR_Success) {
-                            LogMessage("Successfully unshared folder: " + std::string(nameA));
-                        }
-                        else {
-                            LogMessage("Failed to unshare folder: " + std::string(nameA) + " Error code: " + std::to_string(delRes));
-                        }
+                      
                     }
                 }
                 pTmpBuf++;
