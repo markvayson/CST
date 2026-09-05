@@ -1,8 +1,9 @@
-#pragma concept
 #ifndef BLUETOOTH_H
 #define BLUETOOTH_H
 
-#include <windows.h> // <--- ADD THIS INCLUDE
+#include <windows.h>
+
+struct SecurityControl; // Forward declaration
 
 // Checks if the physical Bluetooth radio is enabled
 bool IsBluetoothEnabled();
@@ -10,6 +11,7 @@ bool IsBluetoothEnabled();
 // Enables or disables the physical Bluetooth radio
 void SetBluetoothDeviceState(bool enable);
 
-void HandleBluetoothToggle(HWND hParent);
+// Handles toggling Bluetooth and updating the UI state
+void HandleBluetoothToggle(HWND hParent, SecurityControl* pCtrl = nullptr);
 
 #endif // BLUETOOTH_H

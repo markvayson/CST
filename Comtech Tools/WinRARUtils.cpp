@@ -1,89 +1,214 @@
 #include "WinRARUtils.h"
+#include "CSCsecure.h"
 #include <wininet.h>
 #include <urlmon.h>
 #include <shellapi.h>
 #include <regex>
+#include <thread>
+
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "urlmon.lib")
 
-// Retrieves installed WinRAR version from Registry with registry fallback
 bool GetWinRARVersion(std::wstring& outVersion) {
-    HKEY hKey = NULL;
+    HKEY hKey;
+    const wchar_t* regPath = L"SOFTWARE\\WinRAR";
+    HKEY rootKeys[] = { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER };
 
-    // Check HKLM (64-bit and 32-bit) & HKCU
-    struct RegTarget {
-        HKEY root;
-        const wchar_t* path;
-        REGSAM sam;
-    } targets[] = {
-        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WinRAR", KEY_READ | KEY_WOW64_64KEY },
-        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WinRAR", KEY_READ | KEY_WOW64_32KEY },
-        { HKEY_CURRENT_USER,  L"SOFTWARE\\WinRAR", KEY_READ },
-        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver", KEY_READ },
-        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver", KEY_READ },
-        { HKEY_CURRENT_USER,  L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver", KEY_READ }
-    };
-
-    for (const auto& target : targets) {
-        if (RegOpenKeyExW(target.root, target.path, 0, target.sam, &hKey) == ERROR_SUCCESS) {
-            wchar_t verBuffer[128] = { 0 };
-            DWORD dataSize = sizeof(verBuffer);
-            DWORD dataType = 0;
-
-            // Try "Version" key first, then "DisplayVersion" for Uninstall entries
-            if (RegQueryValueExW(hKey, L"Version", NULL, &dataType, (LPBYTE)verBuffer, &dataSize) == ERROR_SUCCESS ||
-                RegQueryValueExW(hKey, L"DisplayVersion", NULL, &dataType, (LPBYTE)verBuffer, &dataSize) == ERROR_SUCCESS) {
-
+    for (HKEY hRoot : rootKeys) {
+        // Check 64-bit Registry View
+        if (RegOpenKeyExW(hRoot, regPath, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
+            wchar_t verBuf[64] = { 0 };
+            DWORD dwSize = sizeof(verBuf);
+            if (RegQueryValueExW(hKey, L"Version", NULL, NULL, (LPBYTE)verBuf, &dwSize) == ERROR_SUCCESS) {
+                outVersion = verBuf;
                 RegCloseKey(hKey);
-                if (dataType == REG_SZ || dataType == REG_EXPAND_SZ) {
-                    outVersion = verBuffer;
-                    return true;
-                }
+                return true;
+            }
+            RegCloseKey(hKey);
+        }
+
+        // Check 32-bit/Standard Registry View
+        if (RegOpenKeyExW(hRoot, regPath, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            wchar_t verBuf[64] = { 0 };
+            DWORD dwSize = sizeof(verBuf);
+            if (RegQueryValueExW(hKey, L"Version", NULL, NULL, (LPBYTE)verBuf, &dwSize) == ERROR_SUCCESS) {
+                outVersion = verBuf;
+                RegCloseKey(hKey);
+                return true;
             }
             RegCloseKey(hKey);
         }
     }
 
+    // Fallback: Check standard Uninstall keys if SOFTWARE\WinRAR isn't populated
+    const wchar_t* uninstallPath = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WinRAR archiver";
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, uninstallPath, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
+        wchar_t verBuf[64] = { 0 };
+        DWORD dwSize = sizeof(verBuf);
+        if (RegQueryValueExW(hKey, L"DisplayVersion", NULL, NULL, (LPBYTE)verBuf, &dwSize) == ERROR_SUCCESS) {
+            outVersion = verBuf;
+            RegCloseKey(hKey);
+            return true;
+        }
+        RegCloseKey(hKey);
+    }
+
+    outVersion = L"";
     return false;
 }
 
-// Dynamic Download & Silent Installation with Registry Verification Retry
+bool IsVersionOlder(const std::wstring& installed, const std::wstring& latest) {
+    int instMaj = 0, instMin = 0;
+    int latMaj = 0, latMin = 0;
+    swscanf_s(installed.c_str(), L"%d.%d", &instMaj, &instMin);
+    swscanf_s(latest.c_str(), L"%d.%d", &latMaj, &latMin);
+
+    if (instMaj < latMaj) return true;
+    if (instMaj == latMaj && instMin < latMin) return true;
+    return false;
+}
+
+std::wstring GetLatestWinRARVersionOnline() {
+    HINTERNET hInternet = InternetOpenW(L"WinRARChecker", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (!hInternet) return L"7.23";
+
+    HINTERNET hConnect = InternetOpenUrlW(hInternet, L"https://www.rarlab.com/download.htm", NULL, 0, INTERNET_FLAG_RELOAD, 0);
+    if (!hConnect) {
+        InternetCloseHandle(hInternet);
+        return L"7.23";
+    }
+
+    char buffer[4096];
+    DWORD bytesRead = 0;
+    std::string html;
+    while (InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &bytesRead) && bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+        html += buffer;
+    }
+
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hInternet);
+
+    std::regex reg("winrar-x64-(\\d)(\\d{2})\\.exe");
+    std::smatch match;
+    if (std::regex_search(html, match, reg) && match.size() > 2) {
+        std::string maj = match[1].str();
+        std::string min = match[2].str();
+        std::string fullVer = maj + "." + min;
+        return std::wstring(fullVer.begin(), fullVer.end());
+    }
+
+    return L"7.23";
+}
+
+std::wstring GetAppDirectory() {
+    wchar_t szPath[MAX_PATH] = { 0 };
+    GetModuleFileNameW(NULL, szPath, MAX_PATH);
+    wchar_t* lastSlash = wcsrchr(szPath, L'\\');
+    if (lastSlash) {
+        *lastSlash = L'\0';
+    }
+    return std::wstring(szPath);
+}
+
+bool IsFileDownloadedToday(const std::wstring& filePath) {
+    WIN32_FILE_ATTRIBUTE_DATA fileData = { 0 };
+    if (!GetFileAttributesExW(filePath.c_str(), GetFileExInfoStandard, &fileData)) {
+        return false;
+    }
+
+    FILETIME ftLocal;
+    SYSTEMTIME stFileTime, stCurrentTime;
+    FileTimeToLocalFileTime(&fileData.ftLastWriteTime, &ftLocal);
+    FileTimeToSystemTime(&ftLocal, &stFileTime);
+    GetLocalTime(&stCurrentTime);
+
+    return (stFileTime.wYear == stCurrentTime.wYear &&
+        stFileTime.wMonth == stCurrentTime.wMonth &&
+        stFileTime.wDay == stCurrentTime.wDay);
+}
+
+// Finds any existing installer matching winrar-x64-*.exe in app directory
+std::wstring FindExistingWinRARInstaller(const std::wstring& directory) {
+    std::wstring searchPattern = directory + L"\\winrar-x64-*.exe";
+    WIN32_FIND_DATAW findData;
+    HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &findData);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        std::wstring fileName = findData.cFileName;
+        FindClose(hFind);
+        return directory + L"\\" + fileName;
+    }
+    return L"";
+}
+
+
+
 void InstallLatestWinRAR() {
-    char tempPath[MAX_PATH];
-    GetTempPathA(MAX_PATH, tempPath);
-    std::string installerPath = std::string(tempPath) + "winrar_setup.exe";
-
+    std::wstring appDir = GetAppDirectory();
     std::wstring latestVer = GetLatestWinRARVersionOnline();
-    std::string downloadUrl = "https://www.rarlab.com/rar/winrar-x64-723.exe"; // Fallback default
 
+    // Construct real executable filename (e.g. winrar-x64-723.exe)
+    std::wstring actualFileName = L"winrar-x64-723.exe";
     if (!latestVer.empty()) {
         int major = 0, minor = 0;
         swscanf_s(latestVer.c_str(), L"%d.%d", &major, &minor);
         if (major > 0 && minor >= 0) {
-            char urlBuf[256];
-            snprintf(urlBuf, sizeof(urlBuf), "https://www.rarlab.com/rar/winrar-x64-%d%02d.exe", major, minor);
-            downloadUrl = urlBuf;
+            wchar_t buf[128];
+            swprintf_s(buf, 128, L"winrar-x64-%d%02d.exe", major, minor);
+            actualFileName = buf;
         }
     }
 
-    HRESULT hr = URLDownloadToFileA(NULL, downloadUrl.c_str(), installerPath.c_str(), 0, NULL);
-    if (SUCCEEDED(hr)) {
-        SHELLEXECUTEINFOA sei = { sizeof(sei) };
+    std::wstring serverSetupPath = appDir + L"\\" + actualFileName;
+    std::wstring existingInstaller = FindExistingWinRARInstaller(appDir);
+    if (!existingInstaller.empty()) {
+        serverSetupPath = existingInstaller;
+    }
+
+    wchar_t tempPathBuf[MAX_PATH] = { 0 };
+    GetTempPathW(MAX_PATH, tempPathBuf);
+    std::wstring localTempSetupPath = std::wstring(tempPathBuf) + actualFileName;
+
+    bool needDownload = true;
+
+    if (GetFileAttributesW(serverSetupPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        if (IsFileDownloadedToday(serverSetupPath)) {
+            needDownload = false;
+        }
+    }
+
+    if (needDownload) {
+        std::wstring downloadUrl = L"https://www.rarlab.com/rar/" + actualFileName;
+
+        HRESULT hr = URLDownloadToFileW(NULL, downloadUrl.c_str(), serverSetupPath.c_str(), 0, NULL);
+        if (FAILED(hr)) {
+            if (GetFileAttributesW(serverSetupPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                URLDownloadToFileW(NULL, downloadUrl.c_str(), localTempSetupPath.c_str(), 0, NULL);
+            }
+        }
+    }
+
+    if (GetFileAttributesW(serverSetupPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        CopyFileW(serverSetupPath.c_str(), localTempSetupPath.c_str(), FALSE);
+    }
+
+    if (GetFileAttributesW(localTempSetupPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        SHELLEXECUTEINFOW sei = { sizeof(sei) };
         sei.cbSize = sizeof(sei);
-        sei.lpVerb = "runas";
-        sei.lpFile = installerPath.c_str();
-        sei.lpParameters = "/S";
+        sei.lpVerb = L"runas";
+        sei.lpFile = localTempSetupPath.c_str();
+        sei.lpParameters = L"/S";
         sei.nShow = SW_HIDE;
         sei.fMask = SEE_MASK_NOCLOSEPROCESS;
 
-        if (ShellExecuteExA(&sei) && sei.hProcess) {
+        if (ShellExecuteExW(&sei) && sei.hProcess) {
             WaitForSingleObject(sei.hProcess, INFINITE);
             CloseHandle(sei.hProcess);
         }
     }
 
-    // Polling retry loop: Wait up to 5 seconds for registry to register the newly installed version
+    // Verify registry installation for up to 5 seconds
     std::wstring verifiedVer;
     for (int i = 0; i < 10; ++i) {
         Sleep(500);
@@ -93,83 +218,10 @@ void InstallLatestWinRAR() {
     }
 }
 
-// Fetch highest version string from RARLab download page
-std::wstring GetLatestWinRARVersionOnline() {
-    HINTERNET hInternet = ::InternetOpenW(L"CSCsecure/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (!hInternet) return L"";
 
-    // Download download.htm first as it lists the latest full binaries
-    HINTERNET hConnect = ::InternetOpenUrlW(hInternet, L"https://www.rarlab.com/download.htm", NULL, 0, INTERNET_FLAG_RELOAD, 0);
-    if (!hConnect) {
-        // Fallback to news page if download page is unreachable
-        hConnect = ::InternetOpenUrlW(hInternet, L"https://www.rarlab.com/rarnew.htm", NULL, 0, INTERNET_FLAG_RELOAD, 0);
-    }
 
-    if (!hConnect) {
-        ::InternetCloseHandle(hInternet);
-        return L"";
-    }
 
-    char buffer[8192];
-    DWORD bytesRead = 0;
-    std::string htmlContent;
-    while (::InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &bytesRead) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        htmlContent += buffer;
-    }
 
-    ::InternetCloseHandle(hConnect);
-    ::InternetCloseHandle(hInternet);
 
-    int maxMajor = 0, maxMinor = 0;
-    std::string highestVerStr = "";
 
-    // Pattern 1: match installer filename like winrar-x64-723.exe
-    std::regex fileRegex("winrar-x64-([0-9])([0-9]{2})\\.exe", std::regex_constants::icase);
-    auto file_begin = std::sregex_iterator(htmlContent.begin(), htmlContent.end(), fileRegex);
-    auto file_end = std::sregex_iterator();
-    for (std::sregex_iterator i = file_begin; i != file_end; ++i) {
-        std::smatch match = *i;
-        int major = std::atoi(match[1].str().c_str());
-        int minor = std::atoi(match[2].str().c_str());
-        if (major > maxMajor || (major == maxMajor && minor > maxMinor)) {
-            maxMajor = major;
-            maxMinor = minor;
-            highestVerStr = match[1].str() + "." + match[2].str();
-        }
-    }
 
-    // Pattern 2: match standard text tags e.g. "WinRAR 7.23"
-    std::regex verRegex("WinRAR\\s+([0-9]+)\\.([0-9]+)", std::regex_constants::icase);
-    auto words_begin = std::sregex_iterator(htmlContent.begin(), htmlContent.end(), verRegex);
-    auto words_end = std::sregex_iterator();
-    for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-        std::smatch match = *i;
-        int major = std::atoi(match[1].str().c_str());
-        int minor = std::atoi(match[2].str().c_str());
-        if (major > maxMajor || (major == maxMajor && minor > maxMinor)) {
-            maxMajor = major;
-            maxMinor = minor;
-            highestVerStr = match[1].str() + "." + match[2].str();
-        }
-    }
-
-    if (!highestVerStr.empty()) {
-        return std::wstring(highestVerStr.begin(), highestVerStr.end());
-    }
-
-    return L"";
-}
-
-// Version comparison
-bool IsVersionOlder(const std::wstring& installed, const std::wstring& latest) {
-    if (latest.empty() || installed.empty()) return false;
-
-    int instMajor = 0, instMinor = 0, latMajor = 0, latMinor = 0;
-    swscanf_s(installed.c_str(), L"%d.%d", &instMajor, &instMinor);
-    swscanf_s(latest.c_str(), L"%d.%d", &latMajor, &latMinor);
-
-    if (instMajor < latMajor) return true;
-    if (instMajor == latMajor && instMinor < latMinor) return true;
-    return false;
-}

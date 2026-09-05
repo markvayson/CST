@@ -96,6 +96,15 @@
     <ClInclude Include="MsOfficeUtils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="SecurityControlModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ui.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SecureAllHandler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CSCsecure.cpp">
@@ -162,6 +171,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="MsOfficeUtils.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="SecureAllHandler.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

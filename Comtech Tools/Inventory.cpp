@@ -14,7 +14,7 @@
 #include "Theme.h"
 #include "Inventory.h"
 #include <lm.h>
-
+#include "ui.h"
 
 #include <comdef.h>
 #include <wbemidl.h>
@@ -718,5 +718,95 @@ void RunInventoryCollection(HWND hParent) {
     HANDLE hThread = CreateThread(NULL, 0, InventoryThreadProc, (LPVOID)hParent, 0, NULL);
     if (hThread) {
         CloseHandle(hThread);
+    }
+}
+
+static std::string GetHostComputerName() {
+    char hostBuf[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
+    DWORD hostLen = sizeof(hostBuf);
+    GetComputerNameA(hostBuf, &hostLen);
+    return std::string(hostBuf);
+}
+
+void SaveOrUpdateControlCSV() {
+    char exePath[MAX_PATH] = { 0 };
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string scriptDir(exePath);
+    size_t pos = scriptDir.find_last_of("\\/");
+    if (pos != std::string::npos) scriptDir = scriptDir.substr(0, pos);
+
+    std::string inventoryFolder = scriptDir + "\\Inventory Folder";
+    CreateDirectoryA(inventoryFolder.c_str(), NULL);
+
+    std::string csvPath = inventoryFolder + "\\Master_Control_Inventory.csv";
+    std::string pcName = GetHostComputerName();
+    std::string timestamp = GetCurrentTimestamp();
+
+    // CSV Header definition
+    std::string header = "\"PC_Name\",\"LastUpdated\"";
+    for (const auto& ctrl : g_controls) {
+        header += ",\"" + ctrl.name + "\"";
+    }
+    header += "\n";
+
+    // Build the updated record line for current PC
+    std::string newRow = "\"" + pcName + "\",\"" + timestamp + "\"";
+    for (const auto& ctrl : g_controls) {
+        // State 2 = Secured (Check mark icon), otherwise Warning (Cross mark icon)
+        std::string statusIcon = (ctrl.state == 2) ? "✔️" : "❌";
+        newRow += ",\"" + statusIcon + "\"";
+    }
+    newRow += "\n";
+
+    std::vector<std::string> fileLines;
+    bool pcFound = false;
+
+    // Read existing file if present
+    std::ifstream inFile(csvPath);
+    if (inFile.is_open()) {
+        std::string line;
+        bool isFirstLine = true;
+
+        while (std::getline(inFile, line)) {
+            if (line.empty()) continue;
+
+            if (isFirstLine) {
+                fileLines.push_back(header); // Always ensure latest header format
+                isFirstLine = false;
+                continue;
+            }
+
+            // Check if this row belongs to the current PC
+            if (line.rfind("\"" + pcName + "\"", 0) == 0 || line.rfind(pcName + ",", 0) == 0) {
+                fileLines.push_back(newRow); // Replace old record with updated row
+                pcFound = true;
+            }
+            else {
+                fileLines.push_back(line + "\n"); // Keep other PCs' rows untouched
+            }
+        }
+        inFile.close();
+    }
+
+    // If file didn't exist or PC wasn't in the list, construct new file content
+    if (fileLines.empty()) {
+        fileLines.push_back(header);
+        fileLines.push_back(newRow);
+    }
+    else if (!pcFound) {
+        fileLines.push_back(newRow);
+    }
+
+    // Write back all lines in binary mode to preserve UTF-8 character encoding
+    std::ofstream outFile(csvPath, std::ios::binary | std::ios::trunc);
+    if (outFile.is_open()) {
+        // Write UTF-8 Byte Order Mark (BOM) so Excel renders icons/emojis automatically
+        const unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
+        outFile.write(reinterpret_cast<const char*>(bom), sizeof(bom));
+
+        for (const auto& l : fileLines) {
+            outFile.write(l.c_str(), l.size());
+        }
+        outFile.close();
     }
 }

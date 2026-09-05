@@ -8,3 +8,4 @@ bool ShowDarkPasswordDialog(HWND hParent, const char* msg);
 bool ShowDarkRestartDialog(HWND hParent);
 void ShowDarkMessageDialog(HWND hParent, const char* title, const char* msg);
 void ShowDarkMessageDialog(HWND hParent, const char* msg);
+void ShowDarkNoticeDialog(HWND hParent, const char* title, const char* msg);

@@ -15,11 +15,15 @@ static int g_computedDialogHeight = 220;
 // --- Dark Restart Dialog ---
 static bool g_restartNowResult = false;
 
-LRESULT CALLBACK RestartWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+
+// --- Dark Notice Dialog (Single OK Button - Modal) ---
+static std::string g_noticeMsg = "";
+
+LRESULT CALLBACK NoticeWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
-        CreateWindowA("BUTTON", "Restart Now", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, 90, 110, 32, hwnd, (HMENU)1, NULL, NULL);
-        CreateWindowA("BUTTON", "Restart Later", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 145, 90, 110, 32, hwnd, (HMENU)2, NULL, NULL);
+        // Single "Ok" button centered at the bottom
+        CreateWindowA("BUTTON", "Ok", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 95, 85, 90, 32, hwnd, (HMENU)1, NULL, NULL);
         break;
     }
     case WM_PAINT: {
@@ -33,7 +37,106 @@ LRESULT CALLBACK RestartWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         SelectObject(hdc, g_hFontSub);
 
         RECT textRc = { 15, 20, rc.right - 15, 75 };
-        DrawTextA(hdc, "System hardening changes have been applied.\nWould you like to restart your device now?", -1, &textRc, DT_CENTER | DT_WORDBREAK);
+        DrawTextA(hdc, g_noticeMsg.c_str(), -1, &textRc, DT_CENTER | DT_WORDBREAK);
+
+        EndPaint(hwnd, &ps);
+        break;
+    }
+    case WM_DRAWITEM: {
+        LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+        HDC hdc = pdis->hDC;
+
+        HBRUSH hBtnBrush = CreateSolidBrush(COLOR_ACCENT_TEAL);
+        FillRect(hdc, &pdis->rcItem, hBtnBrush);
+        DeleteObject(hBtnBrush);
+
+        HPEN hPen = CreatePen(PS_SOLID, 1, COLOR_ACCENT_TEAL);
+        SelectObject(hdc, hPen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 4, 4);
+        DeleteObject(hPen);
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontBold);
+        DrawTextA(hdc, "Ok", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return TRUE;
+    }
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == 1) {
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
+        }
+        break;
+    }
+    case WM_CLOSE: {
+        HWND hParent = GetParent(hwnd);
+        if (hParent) {
+            SendMessage(hParent, WM_SETREDRAW, FALSE, 0);
+            EnableWindow(hParent, TRUE);
+            SetForegroundWindow(hParent);
+            SendMessage(hParent, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(hParent, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        }
+        DestroyWindow(hwnd);
+        break;
+    }
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+void ShowDarkNoticeDialog(HWND hParent, const char* title, const char* msg) {
+    g_noticeMsg = msg;
+
+    WNDCLASS wc = { 0 };
+    wc.lpfnWndProc = NoticeWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "DarkNoticeDialog";
+    wc.hbrBackground = g_hBrushBg;
+    RegisterClass(&wc);
+
+    HWND hNoticeWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+        "DarkNoticeDialog", title,
+        WS_POPUP | WS_BORDER | WS_CAPTION,
+        0, 0, 280, 160, hParent, NULL, GetModuleHandle(NULL), NULL);
+
+    RECT rcParent; GetWindowRect(hParent, &rcParent);
+    SetWindowPos(hNoticeWnd, NULL,
+        rcParent.left + (rcParent.right - rcParent.left) / 2 - 140,
+        rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 80,
+        280, 160, SWP_NOZORDER);
+
+    BOOL useDarkMode = TRUE;
+    ::DwmSetWindowAttribute(hNoticeWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+    EnableWindow(hParent, FALSE);
+    ShowWindow(hNoticeWnd, SW_SHOW);
+
+    MSG wmsg;
+    while (IsWindow(hNoticeWnd) && GetMessage(&wmsg, NULL, 0, 0)) {
+        TranslateMessage(&wmsg);
+        DispatchMessage(&wmsg);
+    }
+}
+
+LRESULT CALLBACK RestartWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+    case WM_CREATE: {
+        CreateWindowA("BUTTON", "Restart", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 25, 90, 110, 32, hwnd, (HMENU)1, NULL, NULL);
+        CreateWindowA("BUTTON", "Cancel", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 145, 90, 110, 32, hwnd, (HMENU)2, NULL, NULL);
+        break;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+
+        FillRect(hdc, &rc, g_hBrushBg);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        SelectObject(hdc, g_hFontSub);
+
+        RECT textRc = { 15, 20, rc.right - 15, 75 };
+        DrawTextA(hdc, "Would you like to restart your device now?", -1, &textRc, DT_CENTER | DT_WORDBREAK);
 
         EndPaint(hwnd, &ps);
         break;
@@ -56,7 +159,7 @@ LRESULT CALLBACK RestartWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
         SelectObject(hdc, g_hFontBold);
-        DrawTextA(hdc, isNow ? "Restart Now" : "Restart Later", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextA(hdc, isNow ? "Restart" : "Cancel", -1, &pdis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         return TRUE;
     }
     case WM_COMMAND: {

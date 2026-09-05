@@ -5,5 +5,6 @@
 
 // Asynchronously executes native C++ software & hardware inventory collection
 void RunInventoryCollection(HWND hParent);
+void SaveOrUpdateControlCSV();
 
 #endif // INVENTORY_H

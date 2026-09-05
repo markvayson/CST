@@ -102,31 +102,8 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
         return false;
 
     case ID_BTN_RESTART:
-        // Trigger the custom dark mode confirmation dialog
-        if (ShowDarkConfirmDialog(hwnd, "System Restart", "Are you sure you want to restart the computer?")) {
-
-            HANDLE hToken;
-            TOKEN_PRIVILEGES tkp;
-
-            // 1. Get a token for this process to adjust privileges
-            if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
-
-                // 2. Get the LUID for the shutdown privilege
-                LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
-
-                tkp.PrivilegeCount = 1;
-                tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-                // 3. Elevate the process token with the shutdown privilege
-                AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
-
-                // 4. If privilege escalation is successful, invoke the restart
-                if (GetLastError() == ERROR_SUCCESS) {
-                    // EWX_REBOOT shuts down and restarts the system.
-                    // EWX_FORCE forces processes to terminate without prompting the user.
-                    ExitWindowsEx(EWX_REBOOT | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER);
-                }
-            }
+        if (ShowDarkRestartDialog(hwnd)) {
+            ShellExecuteA(NULL, "open", "shutdown.exe", "/r /t 0", NULL, SW_HIDE);
         }
         return true;
 
@@ -174,7 +151,7 @@ void CreateSidebarControls(HWND hwndParent) {
     int sidebarStartY = 20;
     int spacing = 12;
 
-    g_hBtnSecureAll = CreateWindowA("BUTTON", "Secure All", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    g_hBtnSecureAll = CreateWindowA("BUTTON", "Secure Controls", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
     SetWindowSubclass(g_hBtnSecureAll, SidebarBtnSubclassProc, 1, 0);
 
@@ -273,98 +250,6 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     UINT ctlId = pdis->CtlID;
 
     SetBkMode(hdc, TRANSPARENT);
-
-
-    // --- Custom drawing for System Info Panel ---
-    if (ctlId == ID_SIDEBAR_SYSINFO) {
-        
-
-        bool isPressed = (pdis->itemState & ODS_SELECTED) != 0; 
-            POINT pt; GetCursorPos(&pt); ScreenToClient(pdis->hwndItem, &pt); 
-            RECT rcClient; GetClientRect(pdis->hwndItem, &rcClient); 
-            bool isHovered = PtInRect(&rcClient, pt); 
-
-            COLORREF bgCol = isPressed ? RGB(15, 23, 42) : (isHovered ? RGB(23, 32, 51) : COLOR_PANEL); 
-            COLORREF borderColor = isHovered ? RGB(71, 85, 105) : COLOR_BORDER; 
-
-            // 1. Panel Background & Border (FIXED: Using bgCol and borderColor)
-            HBRUSH hBrush = CreateSolidBrush(bgCol);
-        FillRect(hdc, &pdis->rcItem, hBrush); 
-            DeleteObject(hBrush); 
-
-            HPEN hPen = CreatePen(PS_SOLID, 1, borderColor);
-        SelectObject(hdc, hPen); 
-            SelectObject(hdc, GetStockObject(NULL_BRUSH)); 
-            RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6); 
-            DeleteObject(hPen); 
-
-            int currentY = pdis->rcItem.top + 10; 
-
-            // 2. Header Icon & Title
-            SetTextColor(hdc, COLOR_ACCENT_TEAL); 
-            SelectObject(hdc, g_hFontIcon); 
-            RECT rcHeaderIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 }; 
-            wchar_t infoIcon = L'\xE946'; 
-            DrawTextW(hdc, &infoIcon, 1, &rcHeaderIcon, DT_LEFT | DT_TOP | DT_SINGLELINE); 
-
-            SelectObject(hdc, g_hFontBold); 
-            RECT rcHeaderText = { pdis->rcItem.left + 34, currentY, pdis->rcItem.right, currentY + 20 }; 
-            DrawTextA(hdc, "System Information", -1, &rcHeaderText, DT_LEFT | DT_TOP | DT_SINGLELINE); 
-
-            currentY += 26; 
-
-            // 3. Parse and Draw Info Rows
-            char sysInfoText[256] = { 0 }; 
-            GetWindowTextA(pdis->hwndItem, sysInfoText, sizeof(sysInfoText)); 
-
-            char* context = NULL; 
-            char* line = strtok_s(sysInfoText, "\n", &context); 
-
-            while (line != NULL) {
-                
-                std::string s(line); 
-                    size_t delimPos = s.find("|"); 
-
-                    if (delimPos != std::string::npos) {
-                        
-                        std::string label = s.substr(0, delimPos); 
-                            std::string value = s.substr(delimPos + 1); 
-
-                            wchar_t rowIcon = L'\xE7F8'; 
-                            if (label == "Host") rowIcon = L'\xE7F4'; 
-                            else if (label == "OS") rowIcon = L'\xE8A9'; 
-                            else if (label == "Version") rowIcon = L'\xE835'; 
-
-                                // Draw Row Icon
-                                SetTextColor(hdc, COLOR_TEXT_MUTED); 
-                                SelectObject(hdc, g_hFontIcon); 
-                                RECT rcRowIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 }; 
-                                DrawTextW(hdc, &rowIcon, 1, &rcRowIcon, DT_LEFT | DT_TOP | DT_SINGLELINE); 
-
-                                // Draw Label
-                                SetTextColor(hdc, COLOR_TEXT_WHITE); 
-                                SelectObject(hdc, g_hFontSub); 
-                                RECT rcLabel = { pdis->rcItem.left + 32, currentY, pdis->rcItem.right, currentY + 20 }; 
-                                DrawTextA(hdc, label.c_str(), -1, &rcLabel, DT_LEFT | DT_TOP | DT_SINGLELINE); 
-
-                                // Calculate Label Width to dynamically offset Value rect
-                                SIZE szLabel; 
-                                GetTextExtentPoint32A(hdc, label.c_str(), (int)label.length(), &szLabel); 
-
-                                // Draw Value
-                                SetTextColor(hdc, COLOR_ACCENT_TEAL); 
-                                int valueLeft = rcLabel.left + szLabel.cx + 6; 
-                                RECT rcValue = { valueLeft, currentY, pdis->rcItem.right - 12, currentY + 20 }; 
-                                DrawTextA(hdc, value.c_str(), -1, &rcValue, DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS); 
-                    }
-
-                currentY += 22; 
-                    line = strtok_s(NULL, "\n", &context); 
-            }
-        return; 
-    }
-    // ------------------------------------------------
-
     bool isPressed = (pdis->itemState & ODS_SELECTED) != 0;
     bool isDisabled = (pdis->itemState & ODS_DISABLED) != 0;
 
@@ -375,28 +260,114 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     GetClientRect(pdis->hwndItem, &rcClient);
     bool isHovered = !isDisabled && PtInRect(&rcClient, pt);
 
+    // --- Custom drawing for System Info Panel ---
+    if (ctlId == ID_SIDEBAR_SYSINFO) {
+        COLORREF bgCol = isPressed ? RGB(15, 23, 42) : (isHovered ? RGB(23, 32, 51) : COLOR_PANEL);
+        COLORREF borderColor = isHovered ? RGB(71, 85, 105) : COLOR_BORDER;
+
+        // 1. Panel Background & Border
+        HBRUSH hBrush = CreateSolidBrush(bgCol);
+        FillRect(hdc, &pdis->rcItem, hBrush);
+        DeleteObject(hBrush);
+
+        HPEN hPen = CreatePen(PS_SOLID, 1, borderColor);
+        SelectObject(hdc, hPen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
+        DeleteObject(hPen);
+
+        int currentY = pdis->rcItem.top + 10;
+
+        // 2. Header Icon & Title
+        SetTextColor(hdc, COLOR_ACCENT_TEAL);
+        SelectObject(hdc, g_hFontIcon);
+        RECT rcHeaderIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 };
+        wchar_t infoIcon = L'\xE946';
+        DrawTextW(hdc, &infoIcon, 1, &rcHeaderIcon, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        SelectObject(hdc, g_hFontBold);
+        RECT rcHeaderText = { pdis->rcItem.left + 34, currentY, pdis->rcItem.right, currentY + 20 };
+        DrawTextA(hdc, "System Information", -1, &rcHeaderText, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        currentY += 26;
+
+        // 3. Parse and Draw Info Rows
+        char sysInfoText[256] = { 0 };
+        GetWindowTextA(pdis->hwndItem, sysInfoText, sizeof(sysInfoText));
+
+        char* context = NULL;
+        char* line = strtok_s(sysInfoText, "\n", &context);
+
+        while (line != NULL) {
+            std::string s(line);
+            size_t delimPos = s.find("|");
+
+            if (delimPos != std::string::npos) {
+                std::string label = s.substr(0, delimPos);
+                std::string value = s.substr(delimPos + 1);
+
+                wchar_t rowIcon = L'\xE7F8';
+                if (label == "Host") rowIcon = L'\xE7F4';
+                else if (label == "OS") rowIcon = L'\xE8A9';
+                else if (label == "Version") rowIcon = L'\xE835';
+
+                // Draw Row Icon
+                SetTextColor(hdc, COLOR_TEXT_MUTED);
+                SelectObject(hdc, g_hFontIcon);
+                RECT rcRowIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 };
+                DrawTextW(hdc, &rowIcon, 1, &rcRowIcon, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+                // Draw Label
+                SetTextColor(hdc, COLOR_TEXT_WHITE);
+                SelectObject(hdc, g_hFontSub);
+                RECT rcLabel = { pdis->rcItem.left + 32, currentY, pdis->rcItem.right, currentY + 20 };
+                DrawTextA(hdc, label.c_str(), -1, &rcLabel, DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+                // Calculate Label Width to dynamically offset Value rect
+                SIZE szLabel;
+                GetTextExtentPoint32A(hdc, label.c_str(), (int)label.length(), &szLabel);
+
+                // Draw Value
+                SetTextColor(hdc, COLOR_ACCENT_TEAL);
+                int valueLeft = rcLabel.left + szLabel.cx + 6;
+                RECT rcValue = { valueLeft, currentY, pdis->rcItem.right - 12, currentY + 20 };
+                DrawTextA(hdc, value.c_str(), -1, &rcValue, DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+
+            currentY += 22;
+            line = strtok_s(NULL, "\n", &context);
+        }
+        return;
+    }
+
+    // --- Standard Buttons ---
     COLORREF bgCol = COLOR_PANEL;
     COLORREF borderColor = COLOR_BORDER;
     COLORREF textColor = COLOR_TEXT_WHITE;
 
     if (ctlId == ID_BTN_SECURE_ALL) {
-        // --- Outlined Teal Accent CTA ---
-        borderColor = RGB(20, 184, 166); // Teal border
-        textColor = RGB(45, 212, 191);   // Bright teal text & icon
-
-        if (isPressed) {
-            bgCol = RGB(13, 45, 52);      // Dark teal pressed fill
+        if (isDisabled) {
+            bgCol = RGB(23, 32, 51);
+            borderColor = RGB(30, 41, 59);
+            textColor = RGB(100, 116, 139);
+        }
+        else if (isPressed) {
+            bgCol = RGB(13, 45, 52);
+            borderColor = RGB(20, 184, 166);
+            textColor = RGB(45, 212, 191);
         }
         else if (isHovered) {
-            bgCol = RGB(17, 58, 66);      // Subtle dark teal hover tint
+            bgCol = RGB(17, 58, 66);
             borderColor = RGB(45, 212, 191);
+            textColor = RGB(45, 212, 191);
         }
         else {
-            bgCol = COLOR_PANEL;          // Clean dark background
+            bgCol = COLOR_PANEL;
+            borderColor = RGB(20, 184, 166);
+            textColor = RGB(45, 212, 191);
         }
     }
     else {
-        // --- Standard Sidebar Buttons ---
         if (isDisabled) {
             bgCol = RGB(23, 32, 51);
             borderColor = RGB(30, 41, 59);

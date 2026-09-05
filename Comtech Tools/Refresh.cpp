@@ -1,5 +1,6 @@
 #include "Refresh.h"
 #include "Theme.h"
+#include "ui.h"
 #include <commctrl.h>
 #include <thread>
 #include <chrono>
@@ -10,8 +11,6 @@ extern LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 extern HFONT g_hFontIcon;
 extern float g_animatedSecureCount;
 
-// Declared in CSCsecure.cpp
-extern void PerformAuditAndHighlight();
 
 void CreateRefreshButton(HWND hParentWnd) {
     g_hBtnRefresh = CreateWindowA("BUTTON", "",
@@ -25,7 +24,7 @@ void CreateRefreshButton(HWND hParentWnd) {
 }
 
 bool DrawRefreshButton(LPDRAWITEMSTRUCT pdis) {
-    if (!pdis || pdis->CtlID != ID_BTN_REFRESH) return false;
+    if (!pdis || pdis->CtlID != ID_BTN_REFRESH || !pdis->hDC) return false;
 
     HDC hdcMem = CreateCompatibleDC(pdis->hDC);
     int width = pdis->rcItem.right - pdis->rcItem.left;
