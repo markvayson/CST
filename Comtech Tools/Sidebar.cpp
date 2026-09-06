@@ -28,6 +28,7 @@
 #define ID_BTN_RESTART     3006
 #define ID_SIDEBAR_SYSINFO 3010
 #define ID_SIDEBAR_IPINFO  3011
+#define IDM_WIN_FEATURES 3012
 
 HWND g_hBtnSearchPass = NULL;
 
@@ -100,7 +101,9 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
     case ID_BTN_SECURE_ALL:
 
         return false;
-
+    case IDM_WIN_FEATURES:
+        ShellExecuteA(hwnd, "open", "optionalfeatures.exe", NULL, NULL, SW_SHOW);
+        return true;
     case ID_BTN_RESTART:
         if (ShowDarkRestartDialog(hwnd)) {
             ShellExecuteA(NULL, "open", "shutdown.exe", "/r /t 0", NULL, SW_HIDE);
@@ -167,6 +170,9 @@ void CreateSidebarControls(HWND hwndParent) {
         sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_WINUPDATE, NULL, NULL);
     SetWindowSubclass(hBtnUpdate, SidebarBtnSubclassProc, 1, 0);
 
+    HWND hBtnWinFeatures = CreateWindowA("BUTTON", "Windows Features", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+        sidebarX, sidebarStartY + (btnHeight + spacing) * 4, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_WIN_FEATURES, NULL, NULL);
+    SetWindowSubclass(hBtnWinFeatures, SidebarBtnSubclassProc, 1, 0);
 
     RECT rcClient;
     GetClientRect(hwndParent, &rcClient);
@@ -239,6 +245,7 @@ bool IsSidebarButton(UINT ctlId) {
         ctlId == IDM_INVENTORY ||
         ctlId == IDM_SEARCHPASS ||
         ctlId == IDM_WINUPDATE ||
+        ctlId == IDM_WIN_FEATURES ||
         ctlId == ID_BTN_RESTART ||
         ctlId == ID_SIDEBAR_SYSINFO ||
         ctlId == ID_SIDEBAR_IPINFO);
@@ -401,6 +408,7 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     else if (ctlId == IDM_INVENTORY) icon = L'\xE9F9';
     else if (ctlId == IDM_SEARCHPASS) icon = L'\xE192';
     else if (ctlId == IDM_WINUPDATE) icon = L'\xE895';
+    else if (ctlId == IDM_WIN_FEATURES) icon = L'\xE71D';
     else if (ctlId == ID_SIDEBAR_IPINFO) icon = L'\xE839';
     else if (ctlId == ID_BTN_RESTART) icon = L'\xE7E8';
 

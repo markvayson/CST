@@ -48,9 +48,6 @@
     <ClInclude Include="DismApi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="WindowsFeatures.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Bluetooth.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -123,9 +120,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ConfirmDialog.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="WindowsFeatures.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Bluetooth.cpp">

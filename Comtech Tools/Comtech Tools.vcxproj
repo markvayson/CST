@@ -188,7 +188,6 @@
     <ClInclude Include="ui.h" />
     <ClInclude Include="version.h" />
     <ClInclude Include="WifiAdapter.h" />
-    <ClInclude Include="WindowsFeatures.h" />
     <ClInclude Include="WinRARUtils.h" />
   </ItemGroup>
   <ItemGroup>
@@ -214,7 +213,6 @@
     <ClCompile Include="Theme.cpp" />
     <ClCompile Include="ui.cpp" />
     <ClCompile Include="WifiAdapter.cpp" />
-    <ClCompile Include="WindowsFeatures.cpp" />
     <ClCompile Include="WinRARUtils.cpp" />
   </ItemGroup>
   <ItemGroup>

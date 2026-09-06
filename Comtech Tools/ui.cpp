@@ -332,7 +332,6 @@ void InitializeControls() {
                 ExecuteButtonActionWithSpinner(pCtrl->hBtnAction, pCtrl, [pCtrl, enable]() {
                     SetWifiDeviceState(!enable);
 
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
                     pCtrl->statusLabel = "";
                     PostMessage(g_hMainWnd, WM_REFRESH_CONTROL_UI, 0, (LPARAM)pCtrl);
                     });
@@ -725,6 +724,7 @@ else {
         }
     }
 }
+
     };
 
     g_totalControls = static_cast<int>(g_controls.size());
@@ -818,17 +818,33 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 void ResizeToFitControls(HWND hwnd) {
     int startY = 55;
     int rowHeight = 38;
-    int bottomPadding = 15;
+    int bottomPadding = 40;
 
-    int clientHeight = startY + (static_cast<int>(g_controls.size()) * rowHeight) + bottomPadding;
+    // 1. Calculate height needed based on security control rows
+    int controlsHeight = startY + (static_cast<int>(g_controls.size()) * rowHeight) + bottomPadding;
 
+    // 2. Calculate height needed based on sidebar elements with adjusted spacing
+    int sidebarStartY = 18;
+    int btnHeight = 38;
+    int spacing = 10;
+    int numSidebarButtons = 5;
+
+    int sidebarContentHeight = sidebarStartY
+        + (numSidebarButtons * (btnHeight + spacing))
+        + 105 /* SysInfo Panel height */ + spacing
+        + 36 /* IP Button height */ + spacing
+        + btnHeight /* Restart Button height */ + bottomPadding + 25;
+
+    // Use the maximum required height between the main list and sidebar
+    int clientHeight = (controlsHeight > sidebarContentHeight) ? controlsHeight : sidebarContentHeight;
+
+    // Set window size (Main control panel width + Sidebar width + margins)
     RECT rc = { 0, 0, 690, clientHeight };
     AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
 
     SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
     InvalidateRect(hwnd, NULL, TRUE);
 }
-
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_SETCURSOR: {
@@ -975,7 +991,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hPanelSurfaceBrush);
 
         int cornerRadius = 16;
-        int cardBottom = 55 + (static_cast<int>(g_controls.size()) * 38) + 10;
+        int cardBottom = height - 10;
 
         RoundRect(hdc, 10, 10, 475, cardBottom, cornerRadius, cornerRadius);
         RoundRect(hdc, 480, 10, width - 10, cardBottom, cornerRadius, cornerRadius);

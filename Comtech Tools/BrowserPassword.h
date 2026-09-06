@@ -11,6 +11,3 @@ bool AreBrowserCredentialsPresent();
 
 // Enforces or disables browser password manager policies and purges saved passwords on lock
 void ConfigureBrowserPasswordLock(bool lockPasswords);
-
-// Safely deletes browser password credential files across user profiles
-void PurgeBrowserCredentialDatabases();

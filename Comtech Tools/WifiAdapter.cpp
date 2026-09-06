@@ -3,6 +3,10 @@
 #include <setupapi.h>
 #include <cfgmgr32.h>
 #include <devguid.h>
+#include <comdef.h>
+#include <Wbemidl.h>
+
+#pragma comment(lib, "wbemuuid.lib")
 
 #pragma comment(lib, "setupapi.lib")
 
@@ -29,7 +33,7 @@ static bool IsPhysicalWifiAdapter(HDEVINFO hDevInfo, PSP_DEVINFO_DATA pDevInfoDa
 }
 
 bool IsWifiAdapterEnabled() {
-    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT | DIGCF_PROFILE); //[cite: 6]
+    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT); //[cite: 6]
     if (hDevInfo == INVALID_HANDLE_VALUE) return false; //[cite: 6]
 
     SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) }; //[cite: 6]
@@ -47,25 +51,55 @@ bool IsWifiAdapterEnabled() {
     SetupDiDestroyDeviceInfoList(hDevInfo); //[cite: 6]
     return wifiEnabled;
 }
+
+
+
+
 void SetWifiDeviceState(bool enable) {
-    HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_NET, NULL, NULL, DIGCF_PRESENT | DIGCF_PROFILE);
-    if (hDevInfo == INVALID_HANDLE_VALUE) return;
+    HRESULT hr = CoInitializeEx(0, COINIT_MULTITHREADED);
+    IWbemLocator* pLoc = NULL;
+    IWbemServices* pSvc = NULL;
 
-    SP_DEVINFO_DATA devInfoData = { sizeof(SP_DEVINFO_DATA) };
-    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); i++) {
-        if (IsPhysicalWifiAdapter(hDevInfo, &devInfoData)) {
-            SP_PROPCHANGE_PARAMS pcp;
-            pcp.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
-            pcp.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
-            pcp.StateChange = enable ? DPC_ENABLE : DPC_DISABLE;
-            pcp.Scope = DCPC_GLOBAL;
-            pcp.HwProfile = 0;
-
-            if (SetupDiSetClassInstallParams(hDevInfo, &devInfoData, &pcp.ClassInstallHeader, sizeof(pcp))) {
-                SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, hDevInfo, &devInfoData);
-            }
-            break; // Targeted action: stop after modifying the main adapter
-        }
+    if (FAILED(CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID*)&pLoc))) {
+        if (SUCCEEDED(hr)) CoUninitialize();
+        return;
     }
-    SetupDiDestroyDeviceInfoList(hDevInfo);
+
+    if (SUCCEEDED(pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), NULL, NULL, 0, NULL, 0, 0, &pSvc))) {
+        CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+            RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+
+        // Target physical Wi-Fi adapters specifically
+        IEnumWbemClassObject* pEnumerator = NULL;
+        bstr_t query = L"SELECT * FROM Win32_NetworkAdapter WHERE NetConnectionID LIKE '%Wi-Fi%' OR AdapterTypeID = 9";
+
+        if (SUCCEEDED(pSvc->ExecQuery(bstr_t("WQL"), query, WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &pEnumerator))) {
+            IWbemClassObject* pclsObj = NULL;
+            ULONG uReturn = 0;
+
+            while (pEnumerator) {
+                pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+                if (0 == uReturn) break;
+
+                VARIANT vtPath;
+                pclsObj->Get(L"__RELPATH", 0, &vtPath, 0, 0);
+
+                IWbemClassObject* pOutParams = NULL;
+                const wchar_t* methodName = enable ? L"Enable" : L"Disable";
+
+                pSvc->ExecMethod(vtPath.bstrVal, _bstr_t(methodName), 0, NULL, NULL, &pOutParams, NULL);
+
+                if (pOutParams) pOutParams->Release();
+                VariantClear(&vtPath);
+                pclsObj->Release();
+                break; // Stop after updating the primary Wi-Fi adapter
+            }
+            pEnumerator->Release();
+        }
+        pSvc->Release();
+    }
+    pLoc->Release();
+    if (SUCCEEDED(hr)) CoUninitialize();
 }
+
+

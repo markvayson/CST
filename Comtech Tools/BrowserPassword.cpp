@@ -1,9 +1,39 @@
 #include "BrowserPassword.h"
 #include <windows.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 #include <vector>
 #include <string>
 #include <fstream>
+
+
+void KillProcessByName(const wchar_t* processName) {
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return;
+
+    PROCESSENTRY32W pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32W);
+
+    if (Process32FirstW(hSnap, &pe32)) {
+        do {
+            if (_wcsicmp(pe32.szExeFile, processName) == 0) {
+                HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pe32.th32ProcessID);
+                if (hProcess) {
+                    TerminateProcess(hProcess, 0);
+                    CloseHandle(hProcess);
+                }
+            }
+        } while (Process32NextW(hSnap, &pe32));
+    }
+    CloseHandle(hSnap);
+}
+
+void KillBrowserProcesses() {
+    KillProcessByName(L"chrome.exe");
+    KillProcessByName(L"msedge.exe");
+    KillProcessByName(L"brave.exe");
+    KillProcessByName(L"firefox.exe");
+}
 
 static bool ReadPolicyDWORD(const char* subkey, const char* valueName, DWORD& outVal) {
     HKEY hKey;
@@ -82,20 +112,39 @@ bool AreBrowserCredentialsPresent() {
 
 
 
-// Safely deletes browser password credential databases across user profiles
-void PurgeBrowserCredentialDatabases() {
-    char localAppData[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localAppData))) {
-        std::vector<std::string> targetFiles = {
-            std::string(localAppData) + "\\Google\\Chrome\\User Data\\Default\\Login Data",
-            std::string(localAppData) + "\\Microsoft\\Edge\\User Data\\Default\\Login Data",
-            std::string(localAppData) + "\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Login Data"
-        };
 
-        for (const auto& path : targetFiles) {
-            DeleteFileA(path.c_str());
+
+void PurgeAllUsersBrowserCredentials() {
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA("C:\\Users\\*", &findData);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    do {
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+            strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+
+            std::string baseUserPath = std::string("C:\\Users\\") + findData.cFileName + "\\AppData\\Local";
+
+            std::vector<std::string> browserDataPaths = {
+                baseUserPath + "\\Google\\Chrome\\User Data\\",
+                baseUserPath + "\\Microsoft\\Edge\\User Data\\",
+                baseUserPath + "\\BraveSoftware\\Brave-Browser\\User Data\\"
+            };
+
+            for (const auto& basePath : browserDataPaths) {
+                // Purge Default profile
+                DeleteFileA((basePath + "Default\\Login Data").c_str());
+
+                // Purge Profile 1 through Profile 10
+                for (int i = 1; i <= 10; ++i) {
+                    std::string profilePath = basePath + "Profile " + std::to_string(i) + "\\Login Data";
+                    DeleteFileA(profilePath.c_str());
+                }
+            }
         }
-    }
+    } while (FindNextFileA(hFind, &findData));
+
+    FindClose(hFind);
 }
 
 // Enforces or disables browser password manager policies
@@ -116,6 +165,8 @@ void ConfigureBrowserPasswordLock(bool lockPasswords) {
         WritePolicyString("SOFTWARE\\Policies\\BraveSoftware\\Brave\\ClearBrowsingDataOnExitList", "1", "password_signin");
         WritePolicyDWORD("SOFTWARE\\Policies\\Mozilla\\Firefox", "DisablePasswordManager", 1);
 
-        PurgeBrowserCredentialDatabases();
+
+        KillBrowserProcesses();
+        PurgeAllUsersBrowserCredentials();
     }
 }
