@@ -748,8 +748,9 @@ else {
 
         int userCount = 0;
         bool allDisabled = true, allExpire = true;
-        ctrl.liveInfo = GetLocalUserAccountsInfo(userCount, allDisabled, allExpire);
-        if ((userCount > 0 && !allDisabled) || !allExpire) {
+        bool anyMustChange = false, anyCannotChange = false, anyLockedOut = false;
+        ctrl.liveInfo = GetLocalUserAccountsInfo(userCount, allDisabled, allExpire, anyMustChange, anyCannotChange, anyLockedOut);
+        if ((userCount > 0 && !allDisabled) || !allExpire || anyMustChange || anyCannotChange || anyLockedOut) {
             ctrl.statusLabel = "Warning";
             ctrl.state = 1;
             ctrl.actionLabel = "Secure";

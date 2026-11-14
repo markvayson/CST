@@ -4,7 +4,8 @@
 
 #pragma comment(lib, "netapi32.lib")
 
-std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bool& outAllPasswordsExpire) {
+std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bool& outAllPasswordsExpire,
+    bool& outAnyMustChangeAtLogon, bool& outAnyCannotChangePwd, bool& outAnyLockedOut) {
     DWORD dwRead = 0, dwTotal = 0, dwResume = 0;
     PUSER_INFO_1 pBuf = NULL;
     NET_API_STATUS nStatus = NetUserEnum(NULL, 1, FILTER_NORMAL_ACCOUNT, (LPBYTE*)&pBuf, MAX_PREFERRED_LENGTH, &dwRead, &dwTotal, &dwResume);
@@ -12,6 +13,9 @@ std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bo
     outUserCount = 0;
     outAllDisabled = true;
     outAllPasswordsExpire = true;
+    outAnyMustChangeAtLogon = false;
+    outAnyCannotChangePwd = false;
+    outAnyLockedOut = false;
     std::vector<std::string> activeUsers;
 
     if (nStatus == NERR_Success && pBuf != NULL) {
@@ -30,6 +34,15 @@ std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bo
             if (pBuf[i].usri1_flags & UF_DONT_EXPIRE_PASSWD) {
                 outAllPasswordsExpire = false;
             }
+            if (pBuf[i].usri1_flags & UF_PASSWORD_EXPIRED) {
+                outAnyMustChangeAtLogon = true;
+            }
+            if (pBuf[i].usri1_flags & UF_PASSWD_CANT_CHANGE) {
+                outAnyCannotChangePwd = true;
+            }
+            if (pBuf[i].usri1_flags & UF_LOCKOUT) {
+                outAnyLockedOut = true;
+            }
         }
         NetApiBufferFree(pBuf);
     }
@@ -38,20 +51,34 @@ std::string GetLocalUserAccountsInfo(int& outUserCount, bool& outAllDisabled, bo
 
     std::string baseMsg;
     if (outAllDisabled) {
-        baseMsg = "Non-essential user accounts are disabled.";
+        baseMsg = "Local Accounts disabled";
     }
     else if (activeUsers.size() == 1) {
-        baseMsg = activeUsers[0] + " account is currently active.";
+        baseMsg = activeUsers[0] + " is Active";
     }
     else {
         char buf[128];
-        snprintf(buf, sizeof(buf), "%s and %d other accounts are active.", activeUsers[0].c_str(), (int)(activeUsers.size() - 1));
+        snprintf(buf, sizeof(buf), "(%d) Local Accounts Active", (int)activeUsers.size());
         baseMsg = std::string(buf);
     }
 
-    if (!outAllPasswordsExpire) {
-        if (outAllDisabled) return "Accounts disabled, but 'Password never expires' is enabled.";
-        return baseMsg + " (Pass never expires is ticked).";
+    std::string warn;
+    if (!outAllPasswordsExpire) warn += " Password never expires set;";
+    if (outAnyMustChangeAtLogon) warn += " Must change at logon set;";
+    if (outAnyCannotChangePwd) warn += " Cannot change password set;";
+    if (outAnyLockedOut) warn += " Account locked out;";
+
+    int scCount = 0;
+    for (char c : warn) if (c == ';') scCount++;
+
+    if (!warn.empty()) {
+        if (!warn.empty() && warn.back() == ';') warn.pop_back();
+        if (!warn.empty() && warn.back() == ' ') warn.pop_back();
+        std::string warnMsg = "(" + std::to_string(scCount) + ") unsecured option" + (scCount == 1 ? " set" : "s set");
+        return baseMsg + "; " + warnMsg;
+    }
+    if (outAllDisabled) {
+        return "Local Accounts disabled; no unsecured settings";
     }
     return baseMsg;
 }
@@ -72,9 +99,10 @@ void ConfigureLocalUsers(bool disableAccounts) {
             DWORD dwParmErr = 0;
 
             ui1008.usri1008_flags = pBuf[i].usri1_flags;
+            // Enforce: untick must-change-at-logon, cannot-change, password-never-expires, and unlock
+            ui1008.usri1008_flags &= ~(UF_PASSWORD_EXPIRED | UF_PASSWD_CANT_CHANGE | UF_DONT_EXPIRE_PASSWD | UF_LOCKOUT);
             if (disableAccounts) {
                 ui1008.usri1008_flags |= UF_ACCOUNTDISABLE;
-                ui1008.usri1008_flags &= ~UF_DONT_EXPIRE_PASSWD;
             }
             else {
                 ui1008.usri1008_flags &= ~UF_ACCOUNTDISABLE;
