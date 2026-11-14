@@ -1005,7 +1005,7 @@ void ResizeToFitControls(HWND hwnd) {
     int sidebarStartY = 20;
     int btnHeight = 42;
     int spacing = 12;
-    int numSidebarButtons = 5;
+    int numSidebarButtons = 7;
 
     int sidebarContentHeight = sidebarStartY
         + (numSidebarButtons * (btnHeight + spacing))

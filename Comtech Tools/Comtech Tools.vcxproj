@@ -160,6 +160,8 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="activation.h" />
+    <ClInclude Include="office2024.h" />
     <ClInclude Include="Bluetooth.h" />
     <ClInclude Include="BrowserAccount.h" />
     <ClInclude Include="BrowserPassword.h" />
@@ -191,6 +193,8 @@
     <ClInclude Include="WinRARUtils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="activation.cpp" />
+    <ClCompile Include="office2024.cpp" />
     <ClCompile Include="Bluetooth.cpp" />
     <ClCompile Include="BrowserAccount.cpp" />
     <ClCompile Include="BrowserPassword.cpp" />

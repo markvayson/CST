@@ -36,9 +36,11 @@
 
 // --- CUSTOM INPUT BOX STATE ---
 static std::string g_inputDept;
+static std::string g_inputAssetOwner;
 static bool g_inputDone = false;
 static bool g_inputCancelled = false;
 static HWND hEditDept = NULL;
+static HWND hEditAssetOwner = NULL;
 static HWND hLblError = NULL; // Error label handle
 
 static std::string GetDomainOrWorkgroup() {
@@ -56,7 +58,8 @@ static std::string GetDomainOrWorkgroup() {
     return domainName;
 }
 
-static LRESULT CALLBACK DeptEditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+// Subclass procedure for input edit controls to handle the Enter key natively
+static LRESULT CALLBACK InputEditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
     if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
         // Trigger the OK button action (ID = 1) on parent window
         HWND hParent = GetParent(hWnd);
@@ -64,6 +67,9 @@ static LRESULT CALLBACK DeptEditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam
             SendMessage(hParent, WM_COMMAND, MAKEWPARAM(1, BN_CLICKED), (LPARAM)GetDlgItem(hParent, 1));
         }
         return 0; // Prevent default system chime sound
+    }
+    if (uMsg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hWnd, InputEditSubclassProc, uIdSubclass);
     }
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
@@ -130,15 +136,20 @@ static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
 
         if (LOWORD(wParam) == 1) { // OK Button
-            char buf1[256] = { 0 };
-            GetWindowTextA(hEditDept, buf1, sizeof(buf1));
-
-            if (strlen(buf1) == 0) {
-                if (hLblError) ShowWindow(hLblError, SW_SHOW);
-                return 0;
+            char bufDept[256] = { 0 };
+            char bufOwner[256] = { 0 };
+            GetWindowTextA(hEditDept, bufDept, sizeof(bufDept));
+            if (hEditAssetOwner && IsWindow(hEditAssetOwner)) {
+                GetWindowTextA(hEditAssetOwner, bufOwner, sizeof(bufOwner));
             }
 
-            g_inputDept = buf1;
+            if (strlen(bufDept) == 0) {
+                if (hLblError) ShowWindow(hLblError, SW_SHOW);
+                return 0; // Department required, Asset Owner optional
+            }
+
+            g_inputDept = bufDept;
+            g_inputAssetOwner = bufOwner;
             g_inputDone = true;
             g_inputCancelled = false;
             if (hEditBrush) { DeleteObject(hEditBrush); hEditBrush = NULL; }
@@ -173,10 +184,12 @@ static LRESULT CALLBACK InputBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     return 0;
 }
 
-static bool AskUserDepartment(HWND hParent, std::string& outDept) {
+static bool AskInventoryDetails(HWND hParent, std::string& outDept, std::string& outAssetOwner) {
     g_inputDept = "";
+    g_inputAssetOwner = "";
     g_inputDone = false;
     g_inputCancelled = false;
+    hEditAssetOwner = NULL;
 
     WNDCLASS wc = { 0 };
     wc.lpfnWndProc = InputBoxProc;
@@ -188,7 +201,7 @@ static bool AskUserDepartment(HWND hParent, std::string& outDept) {
     HWND hInputWnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
         "CustomInputDialog", "Enter Inventory Details",
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        0, 0, 320, 175, hParent, NULL, GetModuleHandle(NULL), NULL);
+        0, 0, 320, 205, hParent, NULL, GetModuleHandle(NULL), NULL);
 
     BOOL useDarkMode = TRUE;
     ::DwmSetWindowAttribute(hInputWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
@@ -197,34 +210,43 @@ static bool AskUserDepartment(HWND hParent, std::string& outDept) {
         RECT rcParent; GetWindowRect(hParent, &rcParent);
         SetWindowPos(hInputWnd, NULL,
             rcParent.left + (rcParent.right - rcParent.left) / 2 - 160,
-            rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 87,
-            320, 175, SWP_NOZORDER);
+            rcParent.top + (rcParent.bottom - rcParent.top) / 2 - 102,
+            320, 205, SWP_NOZORDER);
     }
 
     HWND hLblDept = CreateWindowA("STATIC", "Department:", WS_VISIBLE | WS_CHILD, 20, 25, 100, 20, hInputWnd, NULL, NULL, NULL);
     SendMessageA(hLblDept, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    // Assign explicit control ID (3) matching Password Dialog pattern
-    hEditDept = CreateWindowExA(0, "EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL, 120, 23, 160, 24, hInputWnd, (HMENU)3, NULL, NULL);
+    // Assign explicit control ID (3) for Department
+    hEditDept = CreateWindowExA(0, "EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 120, 23, 160, 24, hInputWnd, (HMENU)3, NULL, NULL);
     SendMessageA(hEditDept, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
+    SetWindowSubclass(hEditDept, InputEditSubclassProc, 0, 0);
 
-    // Subclass edit control to handle 'Enter' key
-    SetWindowSubclass(hEditDept, DeptEditSubclassProc, 0, 0);
+    HWND hLblOwner = CreateWindowA("STATIC", "Asset Owner:", WS_VISIBLE | WS_CHILD, 20, 55, 100, 20, hInputWnd, NULL, NULL, NULL);
+    SendMessageA(hLblOwner, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    hLblError = CreateWindowA("STATIC", "Please enter Department", WS_CHILD | SS_CENTER, 20, 60, 260, 18, hInputWnd, NULL, NULL, NULL);
+    // Asset Owner is optional
+    hEditAssetOwner = CreateWindowExA(0, "EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 120, 53, 160, 24, hInputWnd, (HMENU)4, NULL, NULL);
+    SendMessageA(hEditAssetOwner, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
+    SetWindowSubclass(hEditAssetOwner, InputEditSubclassProc, 0, 0);
+
+    hLblError = CreateWindowA("STATIC", "Please enter Department", WS_CHILD | SS_CENTER, 20, 82, 260, 18, hInputWnd, NULL, NULL, NULL);
     SendMessageA(hLblError, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
 
-    CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 115, 88, 90, 32, hInputWnd, (HMENU)1, NULL, NULL);
+    CreateWindowA("BUTTON", "OK", WS_VISIBLE | WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 115, 110, 90, 32, hInputWnd, (HMENU)1, NULL, NULL);
 
     if (hParent) EnableWindow(hParent, FALSE);
 
     ShowWindow(hInputWnd, SW_SHOW);
 
-    // Focus immediately on input field when window opens
+    // Focus immediately on Department field when window opens
     SetFocus(hEditDept);
 
     MSG msg;
     while (!g_inputDone && GetMessage(&msg, NULL, 0, 0)) {
+        if (IsDialogMessageA(hInputWnd, &msg)) {
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
@@ -242,6 +264,7 @@ static bool AskUserDepartment(HWND hParent, std::string& outDept) {
     }
 
     outDept = g_inputDept;
+    outAssetOwner = g_inputAssetOwner;
     return true;
 }
 
@@ -678,8 +701,9 @@ static DWORD WINAPI InventoryThreadProc(LPVOID lpParam) {
     HWND hParent = (HWND)lpParam;
 
     std::string departmentInput;
+    std::string assetOwnerInput;
 
-    if (!AskUserDepartment(hParent, departmentInput)) {
+    if (!AskInventoryDetails(hParent, departmentInput, assetOwnerInput)) {
         return 0;
     }
 
@@ -700,7 +724,7 @@ static DWORD WINAPI InventoryThreadProc(LPVOID lpParam) {
     std::string scanDate = GetCurrentTimestamp();
 
     int swCount = CollectSoftwareInventory(hostname, scanDate, inventoryFolder);
-    bool assetSuccess = CollectAssetInventory(hostname, scanDate, inventoryFolder, departmentInput, "");
+    bool assetSuccess = CollectAssetInventory(hostname, scanDate, inventoryFolder, departmentInput, assetOwnerInput);
 
     char msgBuf[512];
     if (swCount > 0 || assetSuccess) {
