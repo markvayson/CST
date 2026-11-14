@@ -170,6 +170,7 @@
     <ClInclude Include="DismApi.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="IISCrypto.h" />
+    <ClInclude Include="WindowsVersion.h" />
     <ClInclude Include="Inventory.h" />
     <ClInclude Include="LocalAccounts.h" />
     <ClInclude Include="Logger.h" />
@@ -201,6 +202,7 @@
     <ClCompile Include="ConfirmDialog.cpp" />
     <ClCompile Include="CSCsecure.cpp" />
     <ClCompile Include="IISCrypto.cpp" />
+    <ClCompile Include="WindowsVersion.cpp" />
     <ClCompile Include="Inventory.cpp" />
     <ClCompile Include="LocalAccounts.cpp" />
     <ClCompile Include="Logger.cpp" />

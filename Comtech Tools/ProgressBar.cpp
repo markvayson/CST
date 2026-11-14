@@ -17,8 +17,11 @@ void InitGdiplusIfNeeded() {
     }
 }
 
-void RenderProgressBar(HDC hdc, int totalControls, float animatedSecureCount, int percentMet, int trackTop) {
+void RenderProgressBar(HDC hdc, int totalControls, float animatedSecureCount, int percentMet, int trackLeft, int trackRight, int trackTop) {
     if (totalControls <= 0) return;
+
+    float trackWidth = static_cast<float>(trackRight - trackLeft);
+    if (trackWidth <= 0.0f) return;
 
     InitGdiplusIfNeeded();
 
@@ -28,7 +31,7 @@ void RenderProgressBar(HDC hdc, int totalControls, float animatedSecureCount, in
     graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
 
     // Track bounds
-    RectF rcTrack(150.0f, static_cast<REAL>(trackTop), 245.0f, 16.0f);
+    RectF rcTrack(static_cast<REAL>(trackLeft), static_cast<REAL>(trackTop), trackWidth, 16.0f);
 
     SolidBrush trackBgBrush(Color(255, 15, 23, 42));
     graphics.FillRectangle(&trackBgBrush, rcTrack);

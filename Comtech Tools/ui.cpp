@@ -13,6 +13,7 @@
 #include "NetworkPrinters.h"
 #include "SharedFolders.h"
 #include "IISCrypto.h"
+#include "WindowsVersion.h"
 #include "BrowserAccount.h"
 #include "BrowserPassword.h"
 #include "LocalAccounts.h"
@@ -254,7 +255,9 @@ static void DrawSystemInfoTopBar(HDC hdc, int left, int right) {
         { cellRects[3], L'\xE946', "Version:", osVer.empty() ? "N/A" : osVer }
     };
 
-    HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontSub);
+    HFONT hInfoFont = CreateFontA(17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hInfoFont ? hInfoFont : g_hFontSub);
     for (int i = 0; i < 4; ++i) {
         const Cell& c = cells[i];
 
@@ -267,7 +270,7 @@ static void DrawSystemInfoTopBar(HDC hdc, int left, int right) {
         RECT rcIcon = { rcContent.left, rcContent.top, rcContent.left + 18, rcContent.bottom };
         DrawTextW(hdc, &c.icon, 1, &rcIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        SelectObject(hdc, g_hFontSub);
+        SelectObject(hdc, hInfoFont ? hInfoFont : g_hFontSub);
         SetTextColor(hdc, COLOR_TEXT_MUTED);
         RECT rcLabel = { rcContent.left + 20, rcContent.top, rcContent.right, rcContent.bottom };
         DrawTextA(hdc, c.label, -1, &rcLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -280,6 +283,7 @@ static void DrawSystemInfoTopBar(HDC hdc, int left, int right) {
         DrawTextA(hdc, c.value.c_str(), -1, &rcValue, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     SelectObject(hdc, hOldFont);
+    if (hInfoFont) DeleteObject(hInfoFont);
 }
 
 
@@ -332,12 +336,9 @@ void RunPowerShellInspector(const std::string& title, const std::string& psCode)
         "Write-Host '----------------------------' -ForegroundColor Yellow; " +
         "Write-Host '' ; " +
         "Write-Host '--- [ EXECUTION RESULT ] ---' -ForegroundColor Green; " +
-        psCode + "; " +
-        "Write-Host '' ; " +
-        "Write-Host 'Press any key to exit...' -ForegroundColor DarkGray; " +
-        "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown');";
+        psCode + ";";
 
-    std::string cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"" + wrapper + "\"";
+    std::string cmd = "powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -Command \"" + wrapper + "\"";
     WinExec(cmd.c_str(), SW_SHOWNORMAL);
 }
 
@@ -513,8 +514,14 @@ void InitializeControls() {
 
                 if (!secure) {
                     std::string script =
-                        "Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, EnableSMB2Protocol; "
-                        "Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol";
+                        "Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol, EnableSMB2Protocol | Format-List; "
+                        "Write-Output 'SMB1 Optional Feature (registry):'; "
+                        "$smb1 = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OptionalFeatures\\SMB1Protocol' -ErrorAction SilentlyContinue; "
+                        "if ($smb1) { $smb1 | Select-Object PSPath, * | Format-List } else { Write-Output 'Not found in OptionalFeatures registry key.' }; "
+                        "Write-Output ''; "
+                        "Write-Output 'SMB1 Client Driver (MRxSmb10) Start:'; "
+                        "$mrx = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\mrxsmb10' -Name Start -ErrorAction SilentlyContinue; "
+                        "if ($mrx) { $mrx.Start } else { Write-Output 'Not found' }";
                     RunPowerShellInspector("SMB Server Protocol Inspector", script);
                 }
  else {
@@ -654,7 +661,9 @@ else {
     if (!pCtrl) return;
 
     if (pCtrl->state == 2 || !secure) {
-        ShellExecuteA(g_hMainWnd, "open", "iiscrypto.exe", NULL, NULL, SW_SHOWNORMAL);
+        if (!LaunchIISCryptoGUI()) {
+            ShellExecuteA(g_hMainWnd, "open", "iiscrypto.exe", NULL, NULL, SW_SHOWNORMAL);
+        }
         return;
     }
 
@@ -1076,6 +1085,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (hit >= 0) {
             if (hit == 1) {
                 ShellExecuteA(hwnd, "open", "control.exe", "ncpa.cpl", NULL, SW_SHOW);
+            } else if (hit == 3) {
+                ShowWindowsVersionEolDialog(hwnd);
             } else {
                 ShellExecuteA(hwnd, "open", "ms-settings:about", NULL, NULL, SW_SHOW);
             }
@@ -1115,7 +1126,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             // Trigger progress bar smooth animation & repaint top header
             SetTimer(hwnd, TIMER_PROGRESS_ANIM, 16, NULL);
-            RECT rcProgressRegion = { 150, 12 + kLeftHeaderOffset, 470, 48 + kLeftHeaderOffset };
+            RECT rcProgressRegion = { 20, 12 + kLeftHeaderOffset, 440, 48 + kLeftHeaderOffset };
             InvalidateRect(hwnd, &rcProgressRegion, FALSE);
 
             // Calculate and invalidate the full row rectangle on the main window
@@ -1146,7 +1157,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 KillTimer(hwnd, TIMER_PROGRESS_ANIM);
             }
 
-            RECT rcProgressRegion = { 150, 12 + kLeftHeaderOffset, 470, 48 + kLeftHeaderOffset };
+            RECT rcProgressRegion = { 20, 12 + kLeftHeaderOffset, 440, 48 + kLeftHeaderOffset };
             InvalidateRect(hwnd, &rcProgressRegion, FALSE);
         }
         return 0;
@@ -1236,16 +1247,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         DrawSystemInfoTopBar(hdc, 20, 465);
 
-        SelectObject(hdc, g_hFontTitle);
+        const char* titleText = "System Controls";
+        SelectObject(hdc, g_hFontBold);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        RECT rcTitle = { 20, 20 + kLeftHeaderOffset, 200, 40 + kLeftHeaderOffset };
-        DrawTextA(hdc, "System Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        SIZE titleSize = {};
+        GetTextExtentPoint32A(hdc, titleText, static_cast<int>(strlen(titleText)), &titleSize);
+
+        const int trackTop = 23 + kLeftHeaderOffset;
+        const int headerTextTop = trackTop - 4;
+        const int headerTextBottom = trackTop + 20;
+
+        RECT rcTitle = { 20, headerTextTop, 20 + titleSize.cx, headerTextBottom };
+        DrawTextA(hdc, titleText, -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         int percentMet = (g_totalControls > 0)
             ? static_cast<int>(std::round((g_animatedSecureCount * 100.0f) / static_cast<float>(g_totalControls)))
             : 0;
 
-        RenderProgressBar(hdc, g_totalControls, g_animatedSecureCount, percentMet, 23 + kLeftHeaderOffset);
+        const int refreshLeft = 440;
+        const int percentAreaRight = refreshLeft - 4;
+        const int percentAreaLeft = percentAreaRight - 44; // reserved for "100%"
+        int trackLeft = rcTitle.right + 12;
+        int trackRight = percentAreaLeft - 8;
+        if (trackRight < trackLeft + 40) {
+            trackLeft = 150; // fallback if space is too tight
+            trackRight = percentAreaLeft - 8;
+        }
+
+        RenderProgressBar(hdc, g_totalControls, g_animatedSecureCount, percentMet, trackLeft, trackRight, trackTop);
 
         COLORREF percentColor;
         if (percentMet >= 100)      percentColor = RGB(45, 212, 191);
@@ -1256,8 +1286,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         char progText[16];
         snprintf(progText, sizeof(progText), "%d%%", percentMet);
-        RECT rcProgText = { 405, 20 + kLeftHeaderOffset, 440, 42 + kLeftHeaderOffset };
-        DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT rcProgText = { percentAreaLeft, headerTextTop, percentAreaRight, headerTextBottom };
+        DrawTextA(hdc, progText, -1, &rcProgText, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
         int startY = 55 + kLeftHeaderOffset;
         int rowHeight = 38;
@@ -1296,7 +1326,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, RGB(148, 163, 184));
             RECT rcInfo = { 48, startY + 18, 330, startY + 36 };
-            DrawTextA(hdc, g_controls[i].liveInfo.c_str(), -1, &rcInfo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            DrawTextA(hdc, g_controls[i].liveInfo.c_str(), -1, &rcInfo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             RestoreDC(hdc, savedDC);
             startY += rowHeight;
         }
