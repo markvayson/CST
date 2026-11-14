@@ -10,7 +10,7 @@
 #pragma comment(lib, "Ws2_32.lib")
 
 #include "Sidebar.h"
-#include "SearchPass.h"
+#include "Credentials.h"
 #include <thread>
 #include "Resource.h"
 #include "Theme.h"
@@ -23,14 +23,13 @@
 // Control & Menu IDs
 #define ID_BTN_SECURE_ALL  1003
 #define IDM_INVENTORY      3005
-#define IDM_SEARCHPASS     3003
 #define IDM_WINUPDATE      3004
 #define ID_BTN_RESTART     3006
 #define ID_SIDEBAR_SYSINFO 3010
 #define ID_SIDEBAR_IPINFO  3011
-#define IDM_WIN_FEATURES 3012
+#define IDM_WIN_FEATURES   3012
 
-HWND g_hBtnSearchPass = NULL;
+// (Credentials button opens available drives in Explorer tabs)
 
 // Helper function to get local IP address
 std::string GetLocalIPAddress() {
@@ -87,15 +86,7 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
 
 
     case IDM_SEARCHPASS:
-        if (IsWindow(g_hSearchResultsWnd)) {
-            SetForegroundWindow(g_hSearchResultsWnd);
-            return true;
-        }
-        if (g_hBtnSearchPass) {
-            EnableWindow(g_hBtnSearchPass, FALSE);
-            InvalidateRect(g_hBtnSearchPass, NULL, FALSE);
-        }
-        std::thread(ExecuteFastSearch).detach();
+        ExecuteCredentialsSearch();
         return true;
 
     case ID_BTN_SECURE_ALL:
@@ -162,9 +153,9 @@ void CreateSidebarControls(HWND hwndParent) {
         sidebarX, sidebarStartY + (btnHeight + spacing), btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_INVENTORY, NULL, NULL);
     SetWindowSubclass(hBtnInv, SidebarBtnSubclassProc, 1, 0);
 
-    g_hBtnSearchPass = CreateWindowA("BUTTON", "Search Pass", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    HWND hBtnCredentials = CreateWindowA("BUTTON", "Credentials", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing) * 2, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_SEARCHPASS, NULL, NULL);
-    SetWindowSubclass(g_hBtnSearchPass, SidebarBtnSubclassProc, 1, 0);
+    SetWindowSubclass(hBtnCredentials, SidebarBtnSubclassProc, 3, 0); // Use unique subclass ID for credentials button
 
     HWND hBtnUpdate = CreateWindowA("BUTTON", "Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_WINUPDATE, NULL, NULL);

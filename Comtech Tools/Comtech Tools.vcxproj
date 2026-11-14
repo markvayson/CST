@@ -177,7 +177,7 @@
     <ClInclude Include="ProgressBar.h" />
     <ClInclude Include="Refresh.h" />
     <ClInclude Include="Resource.h" />
-    <ClInclude Include="SearchPass.h" />
+    <ClInclude Include="Credentials.h" />
     <ClInclude Include="SecureAllHandler.h" />
     <ClInclude Include="SecurityControlModel.h" />
     <ClInclude Include="SharedFolders.h" />
@@ -205,7 +205,7 @@
     <ClCompile Include="NetworkSecPolicies.cpp" />
     <ClCompile Include="ProgressBar.cpp" />
     <ClCompile Include="Refresh.cpp" />
-    <ClCompile Include="SearchPass.cpp" />
+    <ClCompile Include="Credentials.cpp" />
     <ClCompile Include="SecureAllHandler.cpp" />
     <ClCompile Include="SharedFolders.cpp" />
     <ClCompile Include="Sidebar.cpp" />

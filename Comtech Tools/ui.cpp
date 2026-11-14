@@ -4,7 +4,7 @@
 #include "Resource.h"
 #include "Inventory.h"
 #include "version.h"
-#include "SearchPass.h"
+#include "Credentials.h"
 #include "Theme.h"
 #include "Sidebar.h"
 #include "WifiAdapter.h"
