@@ -22,6 +22,7 @@ void PerformAuditAndHighlight();
 void UpdateStatus(const std::string& msg);
 void UpdateSecureAllButtonText();
 void ResizeToFitControls(HWND hwnd);
+void LayoutMainControls(HWND hwnd);
 void LoadVersionInfoFromResource();
 
 void UpdateControlLiveInfo(SecurityControl* pCtrl, const std::string& infoText, const std::string& status = "Applying...");

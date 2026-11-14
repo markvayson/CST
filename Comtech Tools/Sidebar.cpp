@@ -31,6 +31,12 @@
 
 // (Credentials button opens available drives in Explorer tabs)
 
+static HWND g_hBtnInventory = NULL;
+static HWND g_hBtnCredentials = NULL;
+static HWND g_hBtnUpdate = NULL;
+static HWND g_hBtnWinFeatures = NULL;
+static HWND g_hBtnRestart = NULL;
+
 // Helper function to get local IP address
 std::string GetLocalIPAddress() {
     ULONG flags = GAA_FLAG_INCLUDE_PREFIX;
@@ -84,17 +90,17 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
         ShellExecuteA(hwnd, "open", "control.exe", "ncpa.cpl", NULL, SW_SHOW);
         return true;
 
-
     case IDM_SEARCHPASS:
         ExecuteCredentialsSearch();
         return true;
 
     case ID_BTN_SECURE_ALL:
-
         return false;
+
     case IDM_WIN_FEATURES:
         ShellExecuteA(hwnd, "open", "optionalfeatures.exe", NULL, NULL, SW_SHOW);
         return true;
+
     case ID_BTN_RESTART:
         if (ShowDarkRestartDialog(hwnd)) {
             ShellExecuteA(NULL, "open", "shutdown.exe", "/r /t 0", NULL, SW_HIDE);
@@ -104,7 +110,6 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
     case ID_SIDEBAR_SYSINFO:
         ShellExecuteA(hwnd, "open", "ms-settings:about", NULL, NULL, SW_SHOW);
         return true;
-
 
     case IDM_WINUPDATE:
         // FIXED: Launch Windows Update settings natively
@@ -149,86 +154,48 @@ void CreateSidebarControls(HWND hwndParent) {
         sidebarX, sidebarStartY, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_SECURE_ALL, NULL, NULL);
     SetWindowSubclass(g_hBtnSecureAll, SidebarBtnSubclassProc, 1, 0);
 
-    HWND hBtnInv = CreateWindowA("BUTTON", "Collect Inventories", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    g_hBtnInventory = CreateWindowA("BUTTON", "Collect Inventories", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing), btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_INVENTORY, NULL, NULL);
-    SetWindowSubclass(hBtnInv, SidebarBtnSubclassProc, 1, 0);
+    SetWindowSubclass(g_hBtnInventory, SidebarBtnSubclassProc, 1, 0);
 
-    HWND hBtnCredentials = CreateWindowA("BUTTON", "Credentials", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    g_hBtnCredentials = CreateWindowA("BUTTON", "Credentials", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing) * 2, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_SEARCHPASS, NULL, NULL);
-    SetWindowSubclass(hBtnCredentials, SidebarBtnSubclassProc, 3, 0); // Use unique subclass ID for credentials button
+    SetWindowSubclass(g_hBtnCredentials, SidebarBtnSubclassProc, 3, 0); // Use unique subclass ID for credentials button
 
-    HWND hBtnUpdate = CreateWindowA("BUTTON", "Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    g_hBtnUpdate = CreateWindowA("BUTTON", "Windows Update", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_WINUPDATE, NULL, NULL);
-    SetWindowSubclass(hBtnUpdate, SidebarBtnSubclassProc, 1, 0);
+    SetWindowSubclass(g_hBtnUpdate, SidebarBtnSubclassProc, 1, 0);
 
-    HWND hBtnWinFeatures = CreateWindowA("BUTTON", "Windows Features", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+    g_hBtnWinFeatures = CreateWindowA("BUTTON", "Windows Features", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
         sidebarX, sidebarStartY + (btnHeight + spacing) * 4, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_WIN_FEATURES, NULL, NULL);
-    SetWindowSubclass(hBtnWinFeatures, SidebarBtnSubclassProc, 1, 0);
+    SetWindowSubclass(g_hBtnWinFeatures, SidebarBtnSubclassProc, 1, 0);
+
+    g_hBtnRestart = CreateWindowA("BUTTON", "Restart Device", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
+        sidebarX, 0, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_RESTART, NULL, NULL);
+    SetWindowSubclass(g_hBtnRestart, SidebarBtnSubclassProc, 1, 0);
+
+    LayoutSidebarControls(hwndParent);
+}
+
+void LayoutSidebarControls(HWND hwndParent) {
+    int sidebarX = 500;
+    int btnWidth = 160;
+    int btnHeight = 42;
+    int sidebarStartY = 20;
+    int spacing = 12;
 
     RECT rcClient;
     GetClientRect(hwndParent, &rcClient);
 
+    if (g_hBtnSecureAll) MoveWindow(g_hBtnSecureAll, sidebarX, sidebarStartY, btnWidth, btnHeight, TRUE);
+    if (g_hBtnInventory) MoveWindow(g_hBtnInventory, sidebarX, sidebarStartY + (btnHeight + spacing), btnWidth, btnHeight, TRUE);
+    if (g_hBtnCredentials) MoveWindow(g_hBtnCredentials, sidebarX, sidebarStartY + (btnHeight + spacing) * 2, btnWidth, btnHeight, TRUE);
+    if (g_hBtnUpdate) MoveWindow(g_hBtnUpdate, sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, TRUE);
+    if (g_hBtnWinFeatures) MoveWindow(g_hBtnWinFeatures, sidebarX, sidebarStartY + (btnHeight + spacing) * 4, btnWidth, btnHeight, TRUE);
+
     int bottomMargin = 20;
     int restartY = rcClient.bottom - btnHeight - bottomMargin;
-
-    // Retrieve Host and OS Info
-    char hostName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
-    DWORD size = sizeof(hostName);
-    GetComputerNameA(hostName, &size);
-
-    char osName[128] = "Unknown OS";
-    char osVer[64] = "";
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD bufSize = sizeof(osName);
-        RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)osName, &bufSize);
-
-        bufSize = sizeof(osVer);
-        RegQueryValueExA(hKey, "DisplayVersion", NULL, NULL, (LPBYTE)osVer, &bufSize);
-
-        char buildBuf[64] = { 0 };
-        bufSize = sizeof(buildBuf);
-        if (RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)buildBuf, &bufSize) == ERROR_SUCCESS) {
-            if (atoi(buildBuf) >= 22000) {
-                std::string sName = osName;
-                size_t pos = sName.find("Windows 10");
-                if (pos != std::string::npos) {
-                    sName.replace(pos, 10, "Windows 11");
-                    strcpy_s(osName, sizeof(osName), sName.c_str());
-                }
-            }
-        }
-        RegCloseKey(hKey);
-    }
-
-    char sysInfoFull[256];
-    snprintf(sysInfoFull, sizeof(sysInfoFull), "Host|%s\nOS|%s\nVersion|%s", hostName, osName, osVer);
-
-    // IP Address button height and Y calculation
-    int ipBtnHeight = 40;
-    int ipY = restartY - ipBtnHeight - spacing;
-
-    // SysInfo Panel Y calculation
-    int sysInfoHeight = 115;
-    int sysInfoY = ipY - sysInfoHeight - spacing;
-
-    // 1. System Info Panel
-    HWND hSysInfoPanel = CreateWindowA("BUTTON", sysInfoFull, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        sidebarX, sysInfoY, btnWidth, sysInfoHeight, hwndParent, (HMENU)(UINT_PTR)ID_SIDEBAR_SYSINFO, NULL, NULL);
-    SetWindowSubclass(hSysInfoPanel, SidebarBtnSubclassProc, 1, 0);
-
-    // 2. IP Address Control (between SysInfo and Restart)
-    std::string ipAddr = GetLocalIPAddress();
-    std::string ipLabel = "IP: " + ipAddr;
-    HWND hIpBtn = CreateWindowA("BUTTON", ipLabel.c_str(), WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        sidebarX, ipY, btnWidth, ipBtnHeight, hwndParent, (HMENU)(UINT_PTR)ID_SIDEBAR_IPINFO, NULL, NULL);
-    SetWindowSubclass(hIpBtn, SidebarBtnSubclassProc, 1, 0);
-
-    // 3. Restart Button
-    HWND hBtnRestart = CreateWindowA("BUTTON", "Restart Device", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        sidebarX, restartY, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)ID_BTN_RESTART, NULL, NULL);
-    SetWindowSubclass(hBtnRestart, SidebarBtnSubclassProc, 1, 0);
-
+    if (g_hBtnRestart) MoveWindow(g_hBtnRestart, sidebarX, restartY, btnWidth, btnHeight, TRUE);
 }
 
 bool IsSidebarButton(UINT ctlId) {
@@ -237,9 +204,7 @@ bool IsSidebarButton(UINT ctlId) {
         ctlId == IDM_SEARCHPASS ||
         ctlId == IDM_WINUPDATE ||
         ctlId == IDM_WIN_FEATURES ||
-        ctlId == ID_BTN_RESTART ||
-        ctlId == ID_SIDEBAR_SYSINFO ||
-        ctlId == ID_SIDEBAR_IPINFO);
+        ctlId == ID_BTN_RESTART);
 }
 
 
@@ -258,85 +223,7 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     GetClientRect(pdis->hwndItem, &rcClient);
     bool isHovered = !isDisabled && PtInRect(&rcClient, pt);
 
-    // --- Custom drawing for System Info Panel ---
-    if (ctlId == ID_SIDEBAR_SYSINFO) {
-        COLORREF bgCol = isPressed ? RGB(15, 23, 42) : (isHovered ? RGB(23, 32, 51) : COLOR_PANEL);
-        COLORREF borderColor = isHovered ? RGB(71, 85, 105) : COLOR_BORDER;
-
-        // 1. Panel Background & Border
-        HBRUSH hBrush = CreateSolidBrush(bgCol);
-        FillRect(hdc, &pdis->rcItem, hBrush);
-        DeleteObject(hBrush);
-
-        HPEN hPen = CreatePen(PS_SOLID, 1, borderColor);
-        SelectObject(hdc, hPen);
-        SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        RoundRect(hdc, pdis->rcItem.left, pdis->rcItem.top, pdis->rcItem.right, pdis->rcItem.bottom, 6, 6);
-        DeleteObject(hPen);
-
-        int currentY = pdis->rcItem.top + 10;
-
-        // 2. Header Icon & Title
-        SetTextColor(hdc, COLOR_ACCENT_TEAL);
-        SelectObject(hdc, g_hFontIcon);
-        RECT rcHeaderIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 };
-        wchar_t infoIcon = L'\xE946';
-        DrawTextW(hdc, &infoIcon, 1, &rcHeaderIcon, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-        SelectObject(hdc, g_hFontBold);
-        RECT rcHeaderText = { pdis->rcItem.left + 34, currentY, pdis->rcItem.right, currentY + 20 };
-        DrawTextA(hdc, "System Information", -1, &rcHeaderText, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-        currentY += 26;
-
-        // 3. Parse and Draw Info Rows
-        char sysInfoText[256] = { 0 };
-        GetWindowTextA(pdis->hwndItem, sysInfoText, sizeof(sysInfoText));
-
-        char* context = NULL;
-        char* line = strtok_s(sysInfoText, "\n", &context);
-
-        while (line != NULL) {
-            std::string s(line);
-            size_t delimPos = s.find("|");
-
-            if (delimPos != std::string::npos) {
-                std::string label = s.substr(0, delimPos);
-                std::string value = s.substr(delimPos + 1);
-
-                wchar_t rowIcon = L'\xE7F8';
-                if (label == "Host") rowIcon = L'\xE7F4';
-                else if (label == "OS") rowIcon = L'\xE8A9';
-                else if (label == "Version") rowIcon = L'\xE835';
-
-                // Draw Row Icon
-                SetTextColor(hdc, COLOR_TEXT_MUTED);
-                SelectObject(hdc, g_hFontIcon);
-                RECT rcRowIcon = { pdis->rcItem.left + 12, currentY, pdis->rcItem.right, currentY + 20 };
-                DrawTextW(hdc, &rowIcon, 1, &rcRowIcon, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-                // Draw Label
-                SetTextColor(hdc, COLOR_TEXT_WHITE);
-                SelectObject(hdc, g_hFontSub);
-                RECT rcLabel = { pdis->rcItem.left + 32, currentY, pdis->rcItem.right, currentY + 20 };
-                DrawTextA(hdc, label.c_str(), -1, &rcLabel, DT_LEFT | DT_TOP | DT_SINGLELINE);
-
-                // Calculate Label Width to dynamically offset Value rect
-                SIZE szLabel;
-                GetTextExtentPoint32A(hdc, label.c_str(), (int)label.length(), &szLabel);
-
-                // Draw Value
-                SetTextColor(hdc, COLOR_ACCENT_TEAL);
-                int valueLeft = rcLabel.left + szLabel.cx + 6;
-                RECT rcValue = { valueLeft, currentY, pdis->rcItem.right - 12, currentY + 20 };
-                DrawTextA(hdc, value.c_str(), -1, &rcValue, DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-            }
-
-            currentY += 22;
-            line = strtok_s(NULL, "\n", &context);
-        }
-        return;
-    }
+    // (System Information and IP boxes removed from sidebar; info now shown in left panel header)
 
     // --- Standard Buttons ---
     COLORREF bgCol = COLOR_PANEL;

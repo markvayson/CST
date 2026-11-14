@@ -22,6 +22,8 @@
 #include "Refresh.h"
 #include "SecureAllHandler.h"
 
+#include "Sidebar.h"
+
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
@@ -61,6 +63,13 @@
 #define ID_CHK_SELECT_ALL    4099
 #define WM_SHOW_RESTART_PROMPT (WM_USER + 100)
 #define TIMER_PROGRESS_ANIM  101
+
+static const int kLeftInfoBarTop = 20;
+static const int kLeftInfoBarHeight = 76;
+static const int kLeftHeaderOffset = 86;
+
+static int g_hoveredInfoCell = -1;
+static bool g_trackingInfoHover = false;
 
 HWND g_hChkSelectAll = NULL;
 HWND g_hMainWnd = NULL;
@@ -125,6 +134,154 @@ std::string GetFileVersionValue(const char* valueName) {
     return "";
 }
 
+static void GetSystemIdentityInfo(std::string& host, std::string& osName, std::string& osVer) {
+    char hostName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
+    DWORD size = sizeof(hostName);
+    if (GetComputerNameA(hostName, &size)) host = hostName;
+    else host = "Unknown";
+
+    char osBuf[128] = "Unknown OS";
+    char verBuf[64] = "";
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD bufSize = sizeof(osBuf);
+        RegQueryValueExA(hKey, "ProductName", NULL, NULL, (LPBYTE)osBuf, &bufSize);
+
+        bufSize = sizeof(verBuf);
+        RegQueryValueExA(hKey, "DisplayVersion", NULL, NULL, (LPBYTE)verBuf, &bufSize);
+
+        char buildBuf[64] = { 0 };
+        bufSize = sizeof(buildBuf);
+        if (RegQueryValueExA(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)buildBuf, &bufSize) == ERROR_SUCCESS) {
+            if (atoi(buildBuf) >= 22000) {
+                std::string sName = osBuf;
+                size_t pos = sName.find("Windows 10");
+                if (pos != std::string::npos) {
+                    sName.replace(pos, 10, "Windows 11");
+                    strcpy_s(osBuf, sizeof(osBuf), sName.c_str());
+                }
+            }
+        }
+        RegCloseKey(hKey);
+    }
+    osName = osBuf;
+    osVer = verBuf;
+}
+
+static RECT GetSystemInfoCardRect() {
+    return RECT{ 20, kLeftInfoBarTop, 465, kLeftInfoBarTop + kLeftInfoBarHeight };
+}
+
+static void GetSystemInfoCellRects(RECT outRects[4]) {
+    RECT rcBar = GetSystemInfoCardRect();
+    const int cardPadX = 12;
+    const int cardPadY = 10;
+    const int gridHeight = (rcBar.bottom - rcBar.top) - (cardPadY * 2);
+    int innerTop = rcBar.top + ((rcBar.bottom - rcBar.top) - gridHeight) / 2;
+    RECT rcInner = { rcBar.left + cardPadX, innerTop, rcBar.right - cardPadX, innerTop + gridHeight };
+    int midX = rcInner.left + (rcInner.right - rcInner.left) / 2;
+    int midY = rcInner.top + (rcInner.bottom - rcInner.top) / 2;
+    const int gap = 8;
+
+    // Interactive/hit-test cell areas (separated so hover boxes do not cross dividers)
+    outRects[0] = { rcInner.left,  rcInner.top,  midX - gap / 2, midY - gap / 2 }; // Host
+    outRects[1] = { midX + gap / 2, rcInner.top,  rcInner.right, midY - gap / 2 }; // IP
+    outRects[2] = { rcInner.left,  midY + gap / 2, midX - gap / 2, rcInner.bottom }; // OS
+    outRects[3] = { midX + gap / 2, midY + gap / 2, rcInner.right, rcInner.bottom }; // Version
+}
+
+static int HitTestSystemInfoCard(POINT pt) {
+    RECT cells[4];
+    GetSystemInfoCellRects(cells);
+    for (int i = 0; i < 4; ++i) {
+        if (PtInRect(&cells[i], pt)) return i;
+    }
+    return -1;
+}
+
+static void DrawSystemInfoTopBar(HDC hdc, int left, int right) {
+    (void)left; (void)right;
+    std::string host, osName, osVer;
+    GetSystemIdentityInfo(host, osName, osVer);
+    std::string ip = GetLocalIPAddress();
+
+    RECT rcBar = GetSystemInfoCardRect();
+
+    HBRUSH hBarBg = CreateSolidBrush(COLOR_PANEL);
+    HPEN hBarPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
+    HGDIOBJ oldBrush = SelectObject(hdc, hBarBg);
+    HGDIOBJ oldPen = SelectObject(hdc, hBarPen);
+    RoundRect(hdc, rcBar.left, rcBar.top, rcBar.right, rcBar.bottom, 6, 6);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(hBarBg);
+    DeleteObject(hBarPen);
+
+    RECT cellRects[4];
+    GetSystemInfoCellRects(cellRects);
+
+    // Subtle interior grid dividers
+    HPEN hDivPen = CreatePen(PS_SOLID, 1, COLOR_BORDER);
+    HGDIOBJ oldDivPen = SelectObject(hdc, hDivPen);
+    int vX = (cellRects[0].right + cellRects[1].left) / 2;
+    int hY = (cellRects[0].bottom + cellRects[2].top) / 2;
+    MoveToEx(hdc, vX, cellRects[0].top, NULL);
+    LineTo(hdc, vX, cellRects[2].bottom);
+    MoveToEx(hdc, cellRects[0].left, hY, NULL);
+    LineTo(hdc, cellRects[1].right, hY);
+    SelectObject(hdc, oldDivPen);
+    DeleteObject(hDivPen);
+
+    // Hover highlight per interactive cell (contained within cell bounds)
+    if (g_hoveredInfoCell >= 0 && g_hoveredInfoCell < 4) {
+        RECT rcHover = cellRects[g_hoveredInfoCell];
+        HBRUSH hHoverBg = CreateSolidBrush(RGB(30, 41, 59));
+        HPEN hHoverPen = CreatePen(PS_SOLID, 1, RGB(71, 85, 105));
+        HGDIOBJ oldHB = SelectObject(hdc, hHoverBg);
+        HGDIOBJ oldHP = SelectObject(hdc, hHoverPen);
+        RoundRect(hdc, rcHover.left, rcHover.top, rcHover.right, rcHover.bottom, 6, 6);
+        SelectObject(hdc, oldHB);
+        SelectObject(hdc, oldHP);
+        DeleteObject(hHoverBg);
+        DeleteObject(hHoverPen);
+    }
+
+    struct Cell { RECT rc; wchar_t icon; const char* label; std::string value; };
+    Cell cells[4] = {
+        { cellRects[0], L'\xE7F4', "Host:",    host.empty() ? "N/A" : host },
+        { cellRects[1], L'\xE839', "IP:",      ip.empty() ? "N/A" : ip },
+        { cellRects[2], L'\xE770', "OS:",      osName.empty() ? "N/A" : osName },
+        { cellRects[3], L'\xE946', "Version:", osVer.empty() ? "N/A" : osVer }
+    };
+
+    HFONT hOldFont = (HFONT)SelectObject(hdc, g_hFontSub);
+    for (int i = 0; i < 4; ++i) {
+        const Cell& c = cells[i];
+
+        // Internal padding inside each interactive cell
+        RECT rcContent = c.rc;
+        InflateRect(&rcContent, -10, -6);
+
+        SelectObject(hdc, g_hFontIcon);
+        SetTextColor(hdc, COLOR_ACCENT_TEAL);
+        RECT rcIcon = { rcContent.left, rcContent.top, rcContent.left + 18, rcContent.bottom };
+        DrawTextW(hdc, &c.icon, 1, &rcIcon, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        SelectObject(hdc, g_hFontSub);
+        SetTextColor(hdc, COLOR_TEXT_MUTED);
+        RECT rcLabel = { rcContent.left + 20, rcContent.top, rcContent.right, rcContent.bottom };
+        DrawTextA(hdc, c.label, -1, &rcLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        SIZE szLabel = { 0, 0 };
+        GetTextExtentPoint32A(hdc, c.label, lstrlenA(c.label), &szLabel);
+
+        SetTextColor(hdc, COLOR_TEXT_WHITE);
+        RECT rcValue = { rcLabel.left + szLabel.cx + 6, rcContent.top, rcContent.right, rcContent.bottom };
+        DrawTextA(hdc, c.value.c_str(), -1, &rcValue, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    SelectObject(hdc, hOldFont);
+}
+
 
 
 // Helper function to update control text and force parent window repaint
@@ -148,7 +305,7 @@ void UpdateControlLiveInfo(SecurityControl* pCtrl, const std::string& infoText, 
     }
 
     if (g_hMainWnd && IsWindow(g_hMainWnd)) {
-        int startY = 55 + (static_cast<int>(ctrlIndex) * 38);
+        int startY = 55 + kLeftHeaderOffset + (static_cast<int>(ctrlIndex) * 38);
         RECT rcRow = { 48, startY + 18, 330, startY + 36 };
         InvalidateRect(g_hMainWnd, &rcRow, FALSE);
     }
@@ -784,7 +941,7 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 if (rowIdx < g_controls.size()) {
                     g_controls[rowIdx].isHovered = true;
 
-                    int startY = 55 + (static_cast<int>(rowIdx) * 38);
+                    int startY = 55 + kLeftHeaderOffset + (static_cast<int>(rowIdx) * 38);
                     RECT rcIconArea = { 15, startY, 48, startY + 38 };
                     InvalidateRect(hWnd, NULL, TRUE);
                 }
@@ -799,7 +956,7 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             if (rowIdx < g_controls.size()) {
                 g_controls[rowIdx].isHovered = false;
 
-                int startY = 55 + (static_cast<int>(rowIdx) * 38);
+                int startY = 55 + kLeftHeaderOffset + (static_cast<int>(rowIdx) * 38);
                 RECT rcIconArea = { 15, startY, 48, startY + 38 };
                 InvalidateRect(hWnd, NULL, TRUE);
             }
@@ -815,25 +972,45 @@ LRESULT CALLBACK HoverButtonProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+void LayoutMainControls(HWND hwnd) {
+    int startY = 55 + kLeftHeaderOffset;
+    int rowHeight = 38;
+
+    for (size_t i = 0; i < g_controls.size(); i++) {
+        if (g_controls[i].hChkBox && IsWindow(g_controls[i].hChkBox)) {
+            MoveWindow(g_controls[i].hChkBox, 5, startY + 8, 15, 15, TRUE);
+        }
+        if (g_controls[i].hBtnAction && IsWindow(g_controls[i].hBtnAction)) {
+            MoveWindow(g_controls[i].hBtnAction, 370, startY + 5, 90, 28, TRUE);
+        }
+        startY += rowHeight;
+    }
+
+    if (g_hBtnRefresh && IsWindow(g_hBtnRefresh)) {
+        MoveWindow(g_hBtnRefresh, 440, 20 + kLeftHeaderOffset, 24, 24, TRUE);
+    }
+
+    LayoutSidebarControls(hwnd);
+}
+
 void ResizeToFitControls(HWND hwnd) {
-    int startY = 55;
+    int startY = 55 + kLeftHeaderOffset;
     int rowHeight = 38;
     int bottomPadding = 40;
 
     // 1. Calculate height needed based on security control rows
     int controlsHeight = startY + (static_cast<int>(g_controls.size()) * rowHeight) + bottomPadding;
 
-    // 2. Calculate height needed based on sidebar elements with adjusted spacing
-    int sidebarStartY = 18;
-    int btnHeight = 38;
-    int spacing = 10;
+    // 2. Calculate height needed based on sidebar elements
+    int sidebarStartY = 20;
+    int btnHeight = 42;
+    int spacing = 12;
     int numSidebarButtons = 5;
 
     int sidebarContentHeight = sidebarStartY
         + (numSidebarButtons * (btnHeight + spacing))
-        + 105 /* SysInfo Panel height */ + spacing
-        + 36 /* IP Button height */ + spacing
-        + btnHeight /* Restart Button height */ + bottomPadding + 25;
+        + spacing
+        + btnHeight /* Restart Button height */ + 20 /* bottom margin */ + bottomPadding;
 
     // Use the maximum required height between the main list and sidebar
     int clientHeight = (controlsHeight > sidebarContentHeight) ? controlsHeight : sidebarContentHeight;
@@ -843,6 +1020,7 @@ void ResizeToFitControls(HWND hwnd) {
     AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
 
     SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
+    LayoutMainControls(hwnd);
     InvalidateRect(hwnd, NULL, TRUE);
 }
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -851,6 +1029,56 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (g_isExecuting) {
             SetCursor(LoadCursor(NULL, IDC_WAIT));
             return TRUE;
+        }
+        if (LOWORD(lParam) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            if (HitTestSystemInfoCard(pt) >= 0) {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
+    }
+    case WM_MOUSEMOVE: {
+        if (!g_trackingInfoHover) {
+            TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+            g_trackingInfoHover = true;
+        }
+
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        int hit = HitTestSystemInfoCard(pt);
+        if (hit >= 0) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+        }
+        if (hit != g_hoveredInfoCell) {
+            g_hoveredInfoCell = hit;
+            RECT rc = GetSystemInfoCardRect();
+            InvalidateRect(hwnd, &rc, FALSE);
+        }
+        break;
+    }
+    case WM_MOUSELEAVE: {
+        g_trackingInfoHover = false;
+        if (g_hoveredInfoCell != -1) {
+            g_hoveredInfoCell = -1;
+            RECT rc = GetSystemInfoCardRect();
+            InvalidateRect(hwnd, &rc, FALSE);
+        }
+        break;
+    }
+    case WM_LBUTTONUP: {
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        int hit = HitTestSystemInfoCard(pt);
+        if (hit >= 0) {
+            if (hit == 1) {
+                ShellExecuteA(hwnd, "open", "control.exe", "ncpa.cpl", NULL, SW_SHOW);
+            } else {
+                ShellExecuteA(hwnd, "open", "ms-settings:about", NULL, NULL, SW_SHOW);
+            }
+            return 0;
         }
         break;
     }
@@ -886,9 +1114,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             // Trigger progress bar smooth animation & repaint top header
             SetTimer(hwnd, TIMER_PROGRESS_ANIM, 16, NULL);
-            RECT rcProgressRegion = { 150, 12, 470, 48 };
+            RECT rcProgressRegion = { 150, 12 + kLeftHeaderOffset, 470, 48 + kLeftHeaderOffset };
             InvalidateRect(hwnd, &rcProgressRegion, FALSE);
-
 
             // Calculate and invalidate the full row rectangle on the main window
             size_t ctrlIndex = 0;
@@ -899,7 +1126,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 }
             }
 
-            int startY = 55 + (static_cast<int>(ctrlIndex) * 38);
+            int startY = 55 + kLeftHeaderOffset + (static_cast<int>(ctrlIndex) * 38);
             RECT rcRow = { 10, startY, 475, startY + 38 };
             InvalidateRect(hwnd, &rcRow, FALSE);
             SaveOrUpdateControlCSV();
@@ -918,7 +1145,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 KillTimer(hwnd, TIMER_PROGRESS_ANIM);
             }
 
-            RECT rcProgressRegion = { 150, 12, 470, 48 };
+            RECT rcProgressRegion = { 150, 12 + kLeftHeaderOffset, 470, 48 + kLeftHeaderOffset };
             InvalidateRect(hwnd, &rcProgressRegion, FALSE);
         }
         return 0;
@@ -928,6 +1155,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         ShowDarkNoticeDialog(hwnd, "Restart Reminder", "Please don't forget to restart the device");
         return 0;
     }
+    case WM_SIZE:
+        if (wParam != SIZE_MINIMIZED) {
+            LayoutMainControls(hwnd);
+        }
+        return 0;
     case WM_CREATE: {
         g_hMainWnd = hwnd;
         BOOL useDarkMode = TRUE;
@@ -938,6 +1170,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         InitializeControls();
         ResizeToFitControls(hwnd);
         CreateRefreshButton(hwnd);
+        LayoutMainControls(hwnd);
 
         g_hFontTitle = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
         g_hFontSub = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
@@ -946,7 +1179,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         CreateSidebarControls(hwnd);
 
-        int startY = 55;
+        int startY = 55 + kLeftHeaderOffset;
         int rowHeight = 38;
 
         for (size_t i = 0; i < g_controls.size(); i++) {
@@ -1000,16 +1233,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         SelectObject(hdc, hOldPen);
         DeleteObject(hPanelSurfaceBrush);
 
+        DrawSystemInfoTopBar(hdc, 20, 465);
+
         SelectObject(hdc, g_hFontTitle);
         SetTextColor(hdc, COLOR_TEXT_WHITE);
-        RECT rcTitle = { 20, 20, 150, 40 };
+        RECT rcTitle = { 20, 20 + kLeftHeaderOffset, 200, 40 + kLeftHeaderOffset };
         DrawTextA(hdc, "System Controls", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         int percentMet = (g_totalControls > 0)
             ? static_cast<int>(std::round((g_animatedSecureCount * 100.0f) / static_cast<float>(g_totalControls)))
             : 0;
 
-        RenderProgressBar(hdc, g_totalControls, g_animatedSecureCount, percentMet);
+        RenderProgressBar(hdc, g_totalControls, g_animatedSecureCount, percentMet, 23 + kLeftHeaderOffset);
 
         COLORREF percentColor;
         if (percentMet >= 100)      percentColor = RGB(45, 212, 191);
@@ -1020,10 +1255,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
         char progText[16];
         snprintf(progText, sizeof(progText), "%d%%", percentMet);
-        RECT rcProgText = { 405, 20, 440, 42 };
+        RECT rcProgText = { 405, 20 + kLeftHeaderOffset, 440, 42 + kLeftHeaderOffset };
         DrawTextA(hdc, progText, -1, &rcProgText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        int startY = 55;
+        int startY = 55 + kLeftHeaderOffset;
         int rowHeight = 38;
 
         for (size_t i = 0; i < g_controls.size(); i++) {

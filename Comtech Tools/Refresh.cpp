@@ -15,7 +15,7 @@ extern float g_animatedSecureCount;
 void CreateRefreshButton(HWND hParentWnd) {
     g_hBtnRefresh = CreateWindowA("BUTTON", "",
         WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        440, 20, 24, 24,
+        440, 54, 24, 24,
         hParentWnd, (HMENU)ID_BTN_REFRESH, NULL, NULL);
 
     if (g_hBtnRefresh) {
@@ -87,7 +87,7 @@ void ExecuteAppRefresh(HWND hCurrentWnd) {
         g_animatedSecureCount = 0.0f;
 
         // Immediately invalidate header/progress region to show 0%
-        RECT rcProgressRegion = { 150, 12, 470, 48 };
+        RECT rcProgressRegion = { 150, 46, 470, 82 };
         InvalidateRect(hCurrentWnd, &rcProgressRegion, FALSE);
 
         // Background Audit Worker Thread
