@@ -18,7 +18,6 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include "ConfirmDialog.h"
-#include "activation.h"
 #include "office2024.h"
 #include <string>
 
@@ -30,7 +29,6 @@
 #define ID_SIDEBAR_SYSINFO  3010
 #define ID_SIDEBAR_IPINFO   3011
 #define IDM_WIN_FEATURES    3012
-#define IDM_ACTIVATION      3013
 #define IDM_OFFICE2024      3014
 
 // (Credentials button opens available drives in Explorer tabs)
@@ -39,7 +37,6 @@ static HWND g_hBtnInventory = NULL;
 static HWND g_hBtnCredentials = NULL;
 static HWND g_hBtnUpdate = NULL;
 static HWND g_hBtnWinFeatures = NULL;
-static HWND g_hBtnActivation = NULL;
 static HWND g_hBtnOffice2024 = NULL;
 static HWND g_hBtnRestart = NULL;
 
@@ -105,10 +102,6 @@ bool HandleSidebarCommand(HWND hwnd, int wmId) {
 
     case IDM_WIN_FEATURES:
         ShellExecuteA(hwnd, "open", "optionalfeatures.exe", NULL, NULL, SW_SHOW);
-        return true;
-
-    case IDM_ACTIVATION:
-        RunActivationAction(hwnd);
         return true;
 
     case IDM_OFFICE2024:
@@ -184,12 +177,8 @@ void CreateSidebarControls(HWND hwndParent) {
         sidebarX, sidebarStartY + (btnHeight + spacing) * 4, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_WIN_FEATURES, NULL, NULL);
     SetWindowSubclass(g_hBtnWinFeatures, SidebarBtnSubclassProc, 1, 0);
 
-    g_hBtnActivation = CreateWindowA("BUTTON", "MS Activate", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        sidebarX, sidebarStartY + (btnHeight + spacing) * 5, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_ACTIVATION, NULL, NULL);
-    SetWindowSubclass(g_hBtnActivation, SidebarBtnSubclassProc, 1, 0);
-
     g_hBtnOffice2024 = CreateWindowA("BUTTON", "Office 2024", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
-        sidebarX, sidebarStartY + (btnHeight + spacing) * 6, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_OFFICE2024, NULL, NULL);
+        sidebarX, sidebarStartY + (btnHeight + spacing) * 5, btnWidth, btnHeight, hwndParent, (HMENU)(UINT_PTR)IDM_OFFICE2024, NULL, NULL);
     SetWindowSubclass(g_hBtnOffice2024, SidebarBtnSubclassProc, 1, 0);
 
     g_hBtnRestart = CreateWindowA("BUTTON", "Restart Device", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
@@ -214,8 +203,7 @@ void LayoutSidebarControls(HWND hwndParent) {
     if (g_hBtnCredentials) MoveWindow(g_hBtnCredentials, sidebarX, sidebarStartY + (btnHeight + spacing) * 2, btnWidth, btnHeight, TRUE);
     if (g_hBtnUpdate) MoveWindow(g_hBtnUpdate, sidebarX, sidebarStartY + (btnHeight + spacing) * 3, btnWidth, btnHeight, TRUE);
     if (g_hBtnWinFeatures) MoveWindow(g_hBtnWinFeatures, sidebarX, sidebarStartY + (btnHeight + spacing) * 4, btnWidth, btnHeight, TRUE);
-    if (g_hBtnActivation) MoveWindow(g_hBtnActivation, sidebarX, sidebarStartY + (btnHeight + spacing) * 5, btnWidth, btnHeight, TRUE);
-    if (g_hBtnOffice2024) MoveWindow(g_hBtnOffice2024, sidebarX, sidebarStartY + (btnHeight + spacing) * 6, btnWidth, btnHeight, TRUE);
+    if (g_hBtnOffice2024) MoveWindow(g_hBtnOffice2024, sidebarX, sidebarStartY + (btnHeight + spacing) * 5, btnWidth, btnHeight, TRUE);
 
     int bottomMargin = 20;
     int restartY = rcClient.bottom - btnHeight - bottomMargin;
@@ -228,7 +216,6 @@ bool IsSidebarButton(UINT ctlId) {
         ctlId == IDM_SEARCHPASS ||
         ctlId == IDM_WINUPDATE ||
         ctlId == IDM_WIN_FEATURES ||
-        ctlId == IDM_ACTIVATION ||
         ctlId == IDM_OFFICE2024 ||
         ctlId == ID_BTN_RESTART);
 }
@@ -313,7 +300,6 @@ void DrawSidebarButton(LPDRAWITEMSTRUCT pdis) {
     else if (ctlId == IDM_SEARCHPASS) icon = L'\xE192';
     else if (ctlId == IDM_WINUPDATE) icon = L'\xE895';
     else if (ctlId == IDM_WIN_FEATURES) icon = L'\xE71D';
-    else if (ctlId == IDM_ACTIVATION) icon = L'\xE945';
     else if (ctlId == IDM_OFFICE2024) icon = L'\xE74C';
     else if (ctlId == ID_SIDEBAR_IPINFO) icon = L'\xE839';
     else if (ctlId == ID_BTN_RESTART) icon = L'\xE7E8';
