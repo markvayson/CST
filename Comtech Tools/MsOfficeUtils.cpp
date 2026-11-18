@@ -7,58 +7,115 @@
 
 #pragma comment(lib, "urlmon.lib")
 
+namespace {
+std::wstring TrimWhitespaceOffice(const std::wstring& s) {
+    const size_t start = s.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring::npos) return L"";
+    const size_t end = s.find_last_not_of(L" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+bool QueryRegistryStringView(HKEY root, const wchar_t* subKey, const wchar_t* valueName, REGSAM samView, std::wstring& outValue) {
+    outValue.clear();
+    HKEY hKey = NULL;
+    LONG rc = RegOpenKeyExW(root, subKey, 0, KEY_READ | samView, &hKey);
+    if (rc != ERROR_SUCCESS) {
+        return false;
+    }
+
+    DWORD type = 0;
+    DWORD dataSize = 0;
+    rc = RegQueryValueExW(hKey, valueName, NULL, &type, NULL, &dataSize);
+    if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || dataSize < sizeof(wchar_t)) {
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    std::wstring buffer(dataSize / sizeof(wchar_t), L'\0');
+    rc = RegQueryValueExW(hKey, valueName, NULL, &type, reinterpret_cast<LPBYTE>(&buffer[0]), &dataSize);
+    RegCloseKey(hKey);
+    if (rc != ERROR_SUCCESS) {
+        return false;
+    }
+
+    while (!buffer.empty() && buffer.back() == L'\0') {
+        buffer.pop_back();
+    }
+    outValue = TrimWhitespaceOffice(buffer);
+    return !outValue.empty();
+}
+
+bool DirectoryExistsOffice(const std::wstring& path) {
+    if (path.empty()) return false;
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return (attrs != INVALID_FILE_ATTRIBUTES) && ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+}
+}
+
 bool GetInstalledOfficeVersion(int& outYear, std::wstring& outVersionStr) {
     outYear = 0;
     outVersionStr = L"None";
-    HKEY hKey = NULL;
 
-    // Direct registry check for Click-To-Run Office installs
+    // Direct registry check for Click-To-Run Office installs (validate install path to ignore stale remnants)
     const wchar_t* ctrPath = L"SOFTWARE\\Microsoft\\Office\\ClickToRun\\Configuration";
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, ctrPath, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
-        wchar_t productBuf[256] = { 0 };
-        DWORD dataSize = sizeof(productBuf);
-        if (RegQueryValueExW(hKey, L"ProductReleaseIds", NULL, NULL, (LPBYTE)productBuf, &dataSize) == ERROR_SUCCESS) {
-            std::wstring products = productBuf;
-            if (products.find(L"2024") != std::wstring::npos) {
-                outYear = 2024;
-                outVersionStr = L"Office 2024";
-            }
-            else if (products.find(L"2021") != std::wstring::npos) {
-                outYear = 2021;
-                outVersionStr = L"Office 2021";
-            }
-            else if (products.find(L"2019") != std::wstring::npos) {
-                outYear = 2019;
-                outVersionStr = L"Office 2019";
-            }
-            else if (products.find(L"2016") != std::wstring::npos) {
-                outYear = 2016;
-                outVersionStr = L"Office 2016";
-            }
-            else if (products.find(L"O365") != std::wstring::npos || products.find(L"365") != std::wstring::npos) {
-                outYear = 2024; // Microsoft 365 is compliant
-                outVersionStr = L"Microsoft 365";
-            }
-            RegCloseKey(hKey);
-            if (outYear > 0) return true;
+    const REGSAM views[] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY };
+    for (REGSAM view : views) {
+        std::wstring products;
+        if (!QueryRegistryStringView(HKEY_LOCAL_MACHINE, ctrPath, L"ProductReleaseIds", view, products)) {
+            continue;
         }
-        RegCloseKey(hKey);
+
+        std::wstring installationPath;
+        if (!QueryRegistryStringView(HKEY_LOCAL_MACHINE, ctrPath, L"InstallationPath", view, installationPath)) {
+            QueryRegistryStringView(HKEY_LOCAL_MACHINE, ctrPath, L"ClientFolder", view, installationPath);
+        }
+        if (!DirectoryExistsOffice(installationPath)) {
+            continue;
+        }
+
+        if (products.find(L"2024") != std::wstring::npos) {
+            outYear = 2024;
+            outVersionStr = L"Office 2024";
+        }
+        else if (products.find(L"2021") != std::wstring::npos) {
+            outYear = 2021;
+            outVersionStr = L"Office 2021";
+        }
+        else if (products.find(L"2019") != std::wstring::npos) {
+            outYear = 2019;
+            outVersionStr = L"Office 2019";
+        }
+        else if (products.find(L"2016") != std::wstring::npos) {
+            outYear = 2016;
+            outVersionStr = L"Office 2016";
+        }
+        else if (products.find(L"O365") != std::wstring::npos || products.find(L"365") != std::wstring::npos) {
+            outYear = 2024; // Microsoft 365 is compliant
+            outVersionStr = L"Microsoft 365";
+        }
+        else {
+            outYear = 0;
+            outVersionStr = L"Microsoft Office (Click-to-Run)";
+        }
+        return true;
     }
 
-    // Fallback check for legacy MSI installations
-    const wchar_t* versionKeys[] = {
-        L"SOFTWARE\\Microsoft\\Office\\16.0\\Common\\InstallRoot",
-        L"SOFTWARE\\Microsoft\\Office\\15.0\\Common\\InstallRoot",
-        L"SOFTWARE\\Microsoft\\Office\\14.0\\Common\\InstallRoot"
+    // Fallback check for legacy MSI installations (verify install path still exists)
+    struct LegacyCheck { const wchar_t* path; int year; const wchar_t* label; };
+    const LegacyCheck versionKeys[] = {
+        { L"SOFTWARE\\Microsoft\\Office\\16.0\\Common\\InstallRoot", 2021, L"Office 2016-2021" },
+        { L"SOFTWARE\\Microsoft\\Office\\15.0\\Common\\InstallRoot", 2013, L"Office 2013" },
+        { L"SOFTWARE\\Microsoft\\Office\\14.0\\Common\\InstallRoot", 2010, L"Office 2010" }
     };
 
-    for (const auto& path : versionKeys) {
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            if (wcsstr(path, L"16.0")) { outYear = 2021; outVersionStr = L"Office 2016-2021"; }
-            else if (wcsstr(path, L"15.0")) { outYear = 2013; outVersionStr = L"Office 2013"; }
-            else if (wcsstr(path, L"14.0")) { outYear = 2010; outVersionStr = L"Office 2010"; }
-            return true;
+    for (const auto& entry : versionKeys) {
+        for (REGSAM view : views) {
+            std::wstring installPath;
+            if (QueryRegistryStringView(HKEY_LOCAL_MACHINE, entry.path, L"Path", view, installPath) && DirectoryExistsOffice(installPath)) {
+                outYear = entry.year;
+                outVersionStr = entry.label;
+                return true;
+            }
         }
     }
 

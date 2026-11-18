@@ -127,44 +127,84 @@ std::wstring ToLower(std::wstring s) {
     return s;
 }
 
-bool QueryRegistryString(HKEY root, const wchar_t* subKey, const wchar_t* valueName, std::wstring& outValue) {
-    outValue.clear();
-    DWORD dataSize = 0;
-    LONG rc = RegGetValueW(root, subKey, valueName, RRF_RT_REG_SZ, nullptr, nullptr, &dataSize);
-    if (rc != ERROR_SUCCESS || dataSize < sizeof(wchar_t)) {
-        return false;
-    }
+std::wstring TrimWhitespace(const std::wstring& s) {
+    const size_t start = s.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring::npos) return L"";
+    const size_t end = s.find_last_not_of(L" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
 
-    std::wstring buffer(dataSize / sizeof(wchar_t), L'\0');
-    rc = RegGetValueW(root, subKey, valueName, RRF_RT_REG_SZ, nullptr, &buffer[0], &dataSize);
+bool QueryRegistryStringWithView(HKEY root, const wchar_t* subKey, const wchar_t* valueName, REGSAM samView, std::wstring& outValue) {
+    outValue.clear();
+    HKEY hKey = nullptr;
+    LONG rc = RegOpenKeyExW(root, subKey, 0, KEY_READ | samView, &hKey);
     if (rc != ERROR_SUCCESS) {
         return false;
     }
 
-    // Trim null terminators
+    DWORD type = 0;
+    DWORD dataSize = 0;
+    rc = RegQueryValueExW(hKey, valueName, nullptr, &type, nullptr, &dataSize);
+    if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || dataSize < sizeof(wchar_t)) {
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    std::wstring buffer(dataSize / sizeof(wchar_t), L'\0');
+    rc = RegQueryValueExW(hKey, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(&buffer[0]), &dataSize);
+    RegCloseKey(hKey);
+    if (rc != ERROR_SUCCESS) {
+        return false;
+    }
+
     while (!buffer.empty() && buffer.back() == L'\0') {
         buffer.pop_back();
     }
-    outValue = buffer;
-    return true;
+    outValue = TrimWhitespace(buffer);
+    return !outValue.empty();
 }
 
-bool DetectOfficeInstallation(std::wstring& outLabel, bool& outIsOffice2024) {
+bool QueryRegistryString(HKEY root, const wchar_t* subKey, const wchar_t* valueName, std::wstring& outValue) {
+    if (QueryRegistryStringWithView(root, subKey, valueName, KEY_WOW64_64KEY, outValue)) return true;
+    if (QueryRegistryStringWithView(root, subKey, valueName, KEY_WOW64_32KEY, outValue)) return true;
+    return false;
+}
+
+bool DirectoryExists(const std::wstring& path) {
+    if (path.empty()) return false;
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return (attrs != INVALID_FILE_ATTRIBUTES) && ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+}
+
+bool DetectClickToRunOffice(std::wstring& outLabel, bool& outIsOffice2024) {
     outLabel.clear();
     outIsOffice2024 = false;
 
-    // Prefer Click-to-Run configuration for modern Office (2016/2019/2021/2024/M365)
     const wchar_t* ctrPath = L"SOFTWARE\\Microsoft\\Office\\ClickToRun\\Configuration";
-    std::wstring productReleaseIds;
-    if (QueryRegistryString(HKEY_LOCAL_MACHINE, ctrPath, L"ProductReleaseIds", productReleaseIds) && !productReleaseIds.empty()) {
-        const std::wstring lower = ToLower(productReleaseIds);
+    const REGSAM views[] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY };
 
+    for (REGSAM view : views) {
+        std::wstring productReleaseIds;
+        if (!QueryRegistryStringWithView(HKEY_LOCAL_MACHINE, ctrPath, L"ProductReleaseIds", view, productReleaseIds)) {
+            continue;
+        }
+
+        std::wstring installationPath;
+        if (!QueryRegistryStringWithView(HKEY_LOCAL_MACHINE, ctrPath, L"InstallationPath", view, installationPath)) {
+            QueryRegistryStringWithView(HKEY_LOCAL_MACHINE, ctrPath, L"ClientFolder", view, installationPath);
+        }
+
+        // Ignore stale Click-to-Run registry remnants left after Office was removed.
+        if (!DirectoryExists(installationPath)) {
+            continue;
+        }
+
+        const std::wstring lower = ToLower(productReleaseIds);
         if (lower.find(L"2024") != std::wstring::npos) {
             outLabel = L"Office 2024";
             outIsOffice2024 = true;
             return true;
         }
-
         if (lower.find(L"2021") != std::wstring::npos) { outLabel = L"Office 2021"; return true; }
         if (lower.find(L"2019") != std::wstring::npos) { outLabel = L"Office 2019"; return true; }
         if (lower.find(L"2016") != std::wstring::npos) { outLabel = L"Office 2016"; return true; }
@@ -173,25 +213,38 @@ bool DetectOfficeInstallation(std::wstring& outLabel, bool& outIsOffice2024) {
             return true;
         }
 
-        // Unknown Click-to-Run product(s) present
         outLabel = L"Microsoft Office (Click-to-Run)";
         return true;
     }
 
-    // Fallback for legacy MSI-based Office
-    HKEY hKey = nullptr;
+    return false;
+}
+
+bool DetectOfficeInstallation(std::wstring& outLabel, bool& outIsOffice2024) {
+    outLabel.clear();
+    outIsOffice2024 = false;
+
+    // Prefer Click-to-Run configuration for modern Office (2016/2019/2021/2024/M365)
+    if (DetectClickToRunOffice(outLabel, outIsOffice2024)) {
+        return true;
+    }
+
+    // Fallback for legacy MSI-based Office (verify install path still exists)
     struct LegacyCheck { const wchar_t* path; const wchar_t* label; };
     const LegacyCheck checks[] = {
         { L"SOFTWARE\\Microsoft\\Office\\16.0\\Common\\InstallRoot", L"Office 2016/2019/2021 (MSI)" },
         { L"SOFTWARE\\Microsoft\\Office\\15.0\\Common\\InstallRoot", L"Office 2013" },
         { L"SOFTWARE\\Microsoft\\Office\\14.0\\Common\\InstallRoot", L"Office 2010" }
     };
+    const REGSAM views[] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY };
     for (const auto& c : checks) {
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, c.path, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            outLabel = c.label;
-            outIsOffice2024 = false;
-            return true;
+        for (REGSAM view : views) {
+            std::wstring installPath;
+            if (QueryRegistryStringWithView(HKEY_LOCAL_MACHINE, c.path, L"Path", view, installPath) && DirectoryExists(installPath)) {
+                outLabel = c.label;
+                outIsOffice2024 = false;
+                return true;
+            }
         }
     }
 
@@ -403,6 +456,11 @@ exit /b 0
     }
 
     // 2) No Office 2024 detected -> proceed with embedded install script
+    ShowThemedNotice(
+        hwndParent,
+        L"Office 2024",
+        L"Starting the Office 2024 installer.\n\nIf prompted, please allow the administrator permission request to continue.");
+
     std::wstring errorDetails;
     if (!RunEmbeddedBatchScript(hwndParent, kOffice2024BatchScript, L"office_install.cmd", L"runas", SW_HIDE, errorDetails)) {
         std::wostringstream details;
